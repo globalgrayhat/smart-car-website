@@ -5,7 +5,7 @@ import { Server, Socket } from "socket.io";
 import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
-import dotenv from "dotenv";
+import * as dotenv from "dotenv";
 dotenv.config();
 // ====== ESM dirname ======
 const __filename = fileURLToPath(import.meta.url);
