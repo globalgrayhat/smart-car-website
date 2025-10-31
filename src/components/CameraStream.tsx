@@ -9,13 +9,13 @@ interface CameraStreamProps {
 }
 
 export default function CameraStream({
-  signalServer = "http://localhost:5000",
+  signalServer = import.meta.env.VITE_SIGNAL_SERVER,
   onShareScreen,
 }: CameraStreamProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const [socket, setSocket] = useState<Socket | null>(null);
+  const [, setSocket] = useState<Socket | null>(null);
   const [connected, setConnected] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -251,10 +251,10 @@ export default function CameraStream({
   return (
     <div
       ref={containerRef}
-      className="camera-stream relative w-full max-w-2xl mx-auto rounded-xl overflow-hidden bg-gray-900/70 border border-gray-800 shadow-lg"
+      className="relative w-full max-w-2xl mx-auto overflow-hidden border border-gray-800 shadow-lg camera-stream rounded-xl bg-gray-900/70"
     >
       {/* status bar */}
-      <div className="absolute top-3 left-3 right-3 z-20 flex items-center justify-between gap-3">
+      <div className="absolute z-20 flex items-center justify-between gap-3 top-3 left-3 right-3">
         <div className="flex items-center gap-2">
           <span
             className={`inline-flex h-2.5 w-2.5 rounded-full ${
@@ -283,7 +283,7 @@ export default function CameraStream({
         <div className="flex items-center gap-2">
           <button
             type="button"
-            className="p-2 rounded-md bg-white/10 hover:bg-white/20 text-white transition-colors"
+            className="p-2 text-white transition-colors rounded-md bg-white/10 hover:bg-white/20"
             onClick={handleZoomOut}
             aria-label="تصغير"
           >
@@ -291,7 +291,7 @@ export default function CameraStream({
           </button>
           <button
             type="button"
-            className="p-2 rounded-md bg-white/10 hover:bg-white/20 text-white transition-colors"
+            className="p-2 text-white transition-colors rounded-md bg-white/10 hover:bg-white/20"
             onClick={handleZoomIn}
             aria-label="تكبير"
           >
@@ -299,7 +299,7 @@ export default function CameraStream({
           </button>
           <button
             type="button"
-            className="p-2 rounded-md bg-white/10 hover:bg-white/20 text-white transition-colors"
+            className="p-2 text-white transition-colors rounded-md bg-white/10 hover:bg-white/20"
             onClick={handleResetZoom}
             aria-label="إعادة الضبط"
           >
@@ -307,7 +307,7 @@ export default function CameraStream({
           </button>
           <button
             type="button"
-            className="p-2 rounded-md bg-white/10 hover:bg-white/20 text-white transition-colors"
+            className="p-2 text-white transition-colors rounded-md bg-white/10 hover:bg-white/20"
             onClick={toggleScreenShare}
             aria-label="مشاركة الشاشة"
           >
@@ -315,7 +315,7 @@ export default function CameraStream({
           </button>
           <button
             type="button"
-            className="p-2 rounded-md bg-white/10 hover:bg-white/20 text-white transition-colors"
+            className="p-2 text-white transition-colors rounded-md bg-white/10 hover:bg-white/20"
             onClick={toggleFullscreen}
             aria-label="ملء الشاشة"
           >
@@ -325,18 +325,18 @@ export default function CameraStream({
       </div>
 
       {/* video */}
-      <div className="relative aspect-video w-full bg-gradient-to-br from-slate-900 to-slate-800">
+      <div className="relative w-full aspect-video bg-gradient-to-br from-slate-900 to-slate-800">
         {loading ? (
-          <div className="flex flex-col items-center justify-center h-full text-white/70 gap-3">
-            <div className="h-12 w-12 border-2 border-white/30 border-t-white/90 rounded-full animate-spin" />
+          <div className="flex flex-col items-center justify-center h-full gap-3 text-white/70">
+            <div className="w-12 h-12 border-2 rounded-full border-white/30 border-t-white/90 animate-spin" />
             <p className="text-sm">نجهز الكاميرا لك...</p>
           </div>
         ) : !connected ? (
-          <div className="flex flex-col items-center justify-center h-full text-white/70 gap-4">
-            <div className="p-4 rounded-full bg-red-500/10 border border-red-400/50">
+          <div className="flex flex-col items-center justify-center h-full gap-4 text-white/70">
+            <div className="p-4 border rounded-full bg-red-500/10 border-red-400/50">
               <svg
                 xmlns="http://www.w3.org/2000/svg"
-                className="h-8 w-8 text-red-300"
+                className="w-8 h-8 text-red-300"
                 viewBox="0 0 24 24"
                 stroke="currentColor"
                 fill="none"
@@ -370,7 +370,7 @@ export default function CameraStream({
             ref={videoRef}
             autoPlay
             playsInline
-            className="w-full h-full object-cover transition-transform will-change-transform"
+            className="object-cover w-full h-full transition-transform will-change-transform"
             style={{ transform: `scale(${zoom})` }}
           />
         )}
@@ -385,13 +385,13 @@ export default function CameraStream({
           <div className="flex gap-2">
             <button
               onClick={handleZoomOut}
-              className="h-8 w-8 rounded-full bg-white/10 text-white flex items-center justify-center text-sm"
+              className="flex items-center justify-center w-8 h-8 text-sm text-white rounded-full bg-white/10"
             >
               -
             </button>
             <button
               onClick={handleZoomIn}
-              className="h-8 w-8 rounded-full bg-white/10 text-white flex items-center justify-center text-sm"
+              className="flex items-center justify-center w-8 h-8 text-sm text-white rounded-full bg-white/10"
             >
               +
             </button>

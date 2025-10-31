@@ -10,8 +10,8 @@ import {
 // ==========================================
 // CONFIG
 // ==========================================
-const SIGNAL_SERVER = "http://localhost:5000";
-const CHANNEL_ID = "global";
+const SIGNAL_SERVER = import.meta.env.VITE_SIGNAL_SERVER;
+const CHANNEL_ID = import.meta.env.VITE_CHANNEL_ID;
 
 // ==========================================
 // ICONS
