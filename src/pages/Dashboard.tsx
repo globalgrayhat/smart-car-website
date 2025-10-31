@@ -9,7 +9,7 @@ import {
 // CONFIG
 // ======================================
 // signaling server url
-const SIGNAL_SERVER = import.meta.env.VITE_SIGNAL_SERVER;
+const SIGNAL_SERVER = import.meta.env.VITE_SIGNAL_SERVER || "http://localhost:56211";
 const CHANNEL_ID = import.meta.env.VITE_CHANNEL_ID;
 
 // simple icon (screen)
