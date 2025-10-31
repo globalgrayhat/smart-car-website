@@ -9,7 +9,7 @@ interface CameraStreamProps {
 }
 
 export default function CameraStream({
-  signalServer = import.meta.env.VITE_SIGNAL_SERVER || "http://localhost:56211",
+  signalServer = import.meta.env.VITE_SIGNAL_SERVER,
   onShareScreen,
 }: CameraStreamProps) {
   const videoRef = useRef<HTMLVideoElement>(null);

@@ -6,7 +6,7 @@ import {
 } from "../utils/signalEvents";
 
 const Settings: React.FC = () => {
-  const [serverUrl, setServerUrl] = useState(import.meta.env.VITE_SIGNAL_SERVER || "http://localhost:56211");
+  const [serverUrl, setServerUrl] = useState(import.meta.env.VITE_SIGNAL_SERVER);
   const [quality, setQuality] = useState("720p");
   const [uiDir, setUiDir] = useState<"rtl" | "ltr">("rtl");
 
