@@ -1,67 +1,214 @@
-# Arduino Car Control and Camera Streaming
+# 🚗 Smart Car Suite — Arduino Control & Camera Streaming
 
-A complete dashboard to control an Arduino-based car and stream live camera feed using WebRTC from an Android phone.
+A full-stack dashboard for controlling an Arduino-based smart car and streaming live camera feed using WebRTC, powered by **React + NestJS + Mediasoup**.
 
-## Features
+---
 
-- Live camera feed from Android phone using WebRTC
-- Zoom In/Out buttons for camera control
-- Directional controls (left, right, forward, backward) for the car
-- Display car status (Online/Offline) and battery percentage
-- Option to share mobile screen in the dashboard
-- Support for both Dark Mode and Light Mode
-- Smooth animations and interactive effects using GSAP
-- Responsive design for mobile and desktop
+## ✨ Features
 
-## Requirements
+* 📷 **Live camera feed** from an Android phone via WebRTC
+* 🕹️ **Car control buttons** (forward, backward, left, right, stop)
+* 🔍 **Camera zoom** in/out controls
+* ⚡ **Status display**: Car Online/Offline & battery level
+* 📱 **Share Android screen** to dashboard
+* 🌙 **Dark/Light mode toggle**
+* 🎞️ Smooth GSAP animations and transitions
+* 📡 Real-time communication via **Socket.io**
+* 🧠 Role-based access control (Admin / Viewer / Vehicle)
+* ⚙️ Backend using **NestJS + Mediasoup** for scalable media handling
 
-- Node.js version 22.21.1
+---
 
-## Setup Instructions
+## 🧰 Requirements
 
-1. Install dependencies:
-   ```bash
-   npm install
-   ```
+* **Node.js v22.21.1**
+* **npm** (bundled with Node)
+* Optional (for production):
 
-2. Start the development server:
-   ```bash
-   npm run dev
-   ```
+  * **PM2** (process manager)
+  * **Nginx** (reverse proxy)
+  * **Git**
 
-3. Start the WebRTC signaling server:
-   ```bash
-   npm run start:server
-   ```
+---
 
-4. Access the application:
-   - Frontend: http://localhost:5173
-   - Signaling server: http://localhost:5000
+## ⚙️ Setup (Development)
 
-## Technologies Used
+### 1️⃣ Frontend (React + Vite)
 
-- React
-- Vite
-- TypeScript
-- TailwindCSS
-- GSAP
-- WebRTC
-- Material UI
-- Express (for Server)
-- Socket.io (for WebRTC signaling)
+```bash
+cd client
+npm install
+npm run dev
+```
 
-## Project Structure
+> Runs at: [http://localhost:5173](http://localhost:5173)
 
-- `/src/components` - React components
-  - `CameraStream.tsx` - WebRTC camera streaming component
-  - `CarControls.tsx` - Directional control buttons
-  - `ThemeToggle.tsx` - Dark/Light mode toggle
-- `/server.ts` - WebRTC signaling server
+### 2️⃣ Backend (NestJS + Mediasoup)
 
-## VPS Setup (for production)
+```bash
+cd server
+npm install
+npm run start:dev
+```
 
-1. Install Node.js on the VPS
-2. Install Express.js and Socket.io for WebRTC signaling
-3. Set up HTTPS if required for WebRTC connections
-4. Start the Express server to handle WebRTC signaling (port 5000)
-5. Allow incoming traffic to the signaling port (5000)
+> Runs at: [http://localhost:3000](http://localhost:3000)
+
+---
+
+## 🧩 Project Structure
+
+```
+smart-car-website/
+├─ client/          # React frontend (Vite + Tailwind + WebRTC)
+│  ├─ src/components/
+│  │  ├─ CameraStream.tsx
+│  │  ├─ CarControls.tsx
+│  │  └─ ThemeToggle.tsx
+│  ├─ vite.config.ts
+│  └─ ...
+│
+├─ server/          # NestJS backend (WebSocket + Mediasoup)
+│  ├─ src/modules/mediasoup/
+│  │  ├─ mediasoup.gateway.ts
+│  │  ├─ mediasoup.service.ts
+│  │  └─ mediasoup.types.ts
+│  ├─ src/main.ts
+│  └─ ...
+│
+└─ README.md
+```
+
+---
+
+## 🛰️ Tech Stack
+
+### Frontend:
+
+* **React 18 + TypeScript**
+* **Vite**
+* **TailwindCSS**
+* **GSAP** for animations
+* **Socket.io Client**
+* **WebRTC API**
+
+### Backend:
+
+* **NestJS** (modular structure)
+* **Socket.io Gateway**
+* **Mediasoup** (WebRTC SFU)
+* **JWT Authentication**
+* **TypeScript**
+
+---
+
+## 🚀 Deployment (VPS + Nginx + PM2)
+
+### 1️⃣ SSH into your server
+
+```bash
+ssh smartcar@*.*.*.231
+```
+
+### 2️⃣ Install Node.js v22.21.1
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt install -y nodejs
+```
+
+### 3️⃣ Install PM2 and Nginx
+
+```bash
+sudo npm install -g pm2
+sudo apt install -y nginx
+```
+
+### 4️⃣ Deploy project
+
+Upload your zipped folder and extract inside `/home/smartcar`:
+
+```bash
+unzip smart-car-website.zip -d ~/smart-car-website
+cd ~/smart-car-website
+```
+
+### 5️⃣ Build frontend
+
+```bash
+cd client
+npm install
+npm run build
+```
+
+This will generate `dist/`, which you can serve from Nginx:
+
+```
+/var/www/smart-car-website/dist
+```
+
+### 6️⃣ Run backend with PM2
+
+```bash
+cd ../server
+npm install
+pm2 start dist/main.js --name smartcar-backend
+pm2 save
+```
+
+### 7️⃣ Configure Nginx
+
+Example `/etc/nginx/sites-available/smartcar.conf`:
+
+```nginx
+server {
+  server_name smartcarcontrol.shop;
+
+  root /var/www/smart-car-website/dist;
+  index index.html;
+
+  location / {
+    try_files $uri /index.html;
+  }
+
+  location /api/ {
+    proxy_pass http://localhost:3000/;
+  }
+
+  location /mediasoup/ {
+    proxy_pass http://localhost:3000/mediasoup/;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+  }
+}
+```
+
+Then enable & restart:
+
+```bash
+sudo ln -s /etc/nginx/sites-available/smartcar.conf /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+---
+
+## 🧠 Example Flow
+
+1. Vehicle connects using API key → joins channel
+2. Admin connects via dashboard (JWT token)
+3. Vehicle sends live camera → `mediasoup` distributes to viewers
+4. Admin sends control commands → `vehicle:control` event
+5. Car (Arduino) acts accordingly via serial/Wi-Fi
+
+---
+
+## 🛠️ Commands Summary
+
+| Action               | Command                                  |
+| -------------------- | ---------------------------------------- |
+| Start frontend (dev) | `npm run dev`                            |
+| Build frontend       | `npm run build`                          |
+| Start backend (dev)  | `npm run start:dev`                      |
+| Start backend (prod) | `pm2 start dist/main.js --name smartcar` |
+| View logs            | `pm2 logs smartcar`                      |
+| Reload all           | `pm2 reload all`                         |

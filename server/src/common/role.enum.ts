@@ -1,0 +1,5 @@
+export enum Role {
+  ADMIN = "ADMIN",
+  BROADCAST_MANAGER = "BROADCAST_MANAGER",
+  VIEWER = "VIEWER"
+}

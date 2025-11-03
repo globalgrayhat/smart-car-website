@@ -1,25 +1,35 @@
-# Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
+# Ignore client & server dependencies and builds
+client/node_modules
+client/dist
+client/dist-*
+client/dist-server
 
-node_modules
-dist
-dist-*
-dist-server
-*.local
-.env
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
+server/node_modules
+server/dist
+server/build
+
+# Ignore deployment builds (production)
+var/www/smart-car-website/dist
+
+# Logs & runtime data
+*.log
+*.pid
+*.seed
+*.pid.lock
+
+# OS / Editor files
 .DS_Store
+Thumbs.db
+
+# VSCode / IDE settings
+.vscode/
+.idea/
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+
+# Environment files
+.env
+.env.*
