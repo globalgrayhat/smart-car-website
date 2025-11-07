@@ -1,0 +1,130 @@
+version: "3.8"
+
+services:
+  # ============================================================
+  # Redis (core dependency)
+  # ============================================================
+  redis:
+    image: redis:7
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ============================================================
+  # MySQL (OPTIONAL in-container database)
+  # - Uncomment to use MySQL inside Docker instead of host DB.
+  # - Backend will connect using DB_HOST=mysql
+  # ============================================================
+  # mysql:
+  #   image: mysql:8
+  #   restart: always
+  #   environment:
+  #     MYSQL_ROOT_PASSWORD: password
+  #     MYSQL_DATABASE: smartcar
+  #     MYSQL_USER: smartcar_user
+  #     MYSQL_PASSWORD: userpass
+  #   ports:
+  #     # Expose only for dev; comment out in production
+  #     - "3306:3306"
+  #   volumes:
+  #     - mysql_data:/var/lib/mysql
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "mysqladmin ping -ppassword -h 127.0.0.1 --silent"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 10
+
+  # ============================================================
+  # phpMyAdmin (OPTIONAL)
+  # - Works only if MySQL container above is enabled.
+  # - Access: http://localhost:8081
+  # ============================================================
+  # phpmyadmin:
+  #   image: phpmyadmin:latest
+  #   restart: always
+  #   environment:
+  #     PMA_HOST: mysql
+  #     PMA_USER: smartcar_user
+  #     PMA_PASSWORD: userpass
+  #   ports:
+  #     - "8081:80"
+  #   depends_on:
+  #     - mysql
+
+  # ============================================================
+  # Backend (NestJS + Mediasoup)
+  # ============================================================
+  backend:
+    build: ./server
+    restart: always
+    environment:
+      # Redis (container-to-container)
+      - REDIS_URL=redis://redis:6379
+
+      # DB settings:
+      # 1) If using MySQL container: DB_HOST=mysql
+      # 2) If using host MySQL (XAMPP): DB_HOST=host.docker.internal
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_USER=smartcar_user
+      - DB_PASS=userpass
+      - DB_NAME=smartcar
+
+      - JWT_SECRET=changeme
+
+      # Mediasoup public IP (for external clients; optional)
+      - ANNOUNCED_IP=
+
+      # Mediasoup ports range (must match exposed ports)
+      - MEDIASOUP_RTC_MIN_PORT=40000
+      - MEDIASOUP_RTC_MAX_PORT=49999
+
+      # HLS
+      - HLS_DIR=/app/var/hls
+      - HLS_PART_DURATION=1
+      - HLS_LIST_SIZE=8
+      - HLS_PRESET=veryfast
+      - HLS_VIDEO_BITRATE=3000k
+      - HLS_VIDEO_MAXRATE=3500k
+      - HLS_VIDEO_BUFSIZE=6000k
+      - HLS_AUDIO_BITRATE=128k
+
+      - TZ=Asia/Baghdad
+    volumes:
+      - hls_data:/app/var/hls
+    depends_on:
+      redis:
+        condition: service_healthy
+      # mysql:
+      #   condition: service_healthy
+    ports:
+      # HTTP / WebSocket
+      - "3000:3000"
+      # Mediasoup RTP/RTCP
+      - "40000-49999:40000-49999/udp"
+      - "40000-49999:40000-49999"
+
+  # ============================================================
+  # Frontend (build + serve)
+  # - Your client/ Dockerfile should build Vite app to /usr/share/nginx/html
+  # - Configure it to call backend at http://localhost:3000
+  # ============================================================
+  frontend:
+    build: ./client
+    restart: always
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+volumes:
+  redis_data:
+  mysql_data:
+  hls_data:

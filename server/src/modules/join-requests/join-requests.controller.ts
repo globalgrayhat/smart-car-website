@@ -1,66 +1,113 @@
 import {
+  Body,
   Controller,
-  Post,
   Get,
   Param,
-  Body,
+  ParseIntPipe,
+  Post,
+  Req,
   UseGuards,
-  Request,
-} from "@nestjs/common";
-import { JwtAuthGuard } from "../auth/jwt.guard";
-import { RolesGuard } from "../auth/roles.guard";
-import { Roles } from "../auth/roles.decorator";
-import { UserRole } from "../users/user.entity";
-import { JoinRequestsService } from "./join-requests.service";
-import { CreateJoinRequestDto } from "./dto/create-join-request.dto";
+  BadRequestException,
+} from '@nestjs/common';
+import { JoinRequestsService } from './join-requests.service';
+import { JoinIntent } from './join-request.entity';
+import { CreateJoinRequestDto } from './dto/create-join-request.dto';
+import { JwtAuthGuard } from '../auth/jwt.guard';
 
-@Controller("join-requests")
+@Controller('join-requests')
 @UseGuards(JwtAuthGuard)
 export class JoinRequestsController {
   constructor(private readonly service: JoinRequestsService) {}
 
+  /**
+   * Create a new join request from the current user to a target owner.
+   */
   @Post()
-  async create(@Request() req, @Body() body: CreateJoinRequestDto) {
-    const fromUserId = req.user.userId;
-    return this.service.create(
-      fromUserId,
-      body.toUserId,
-      body.message,
-      body.intent ?? "VIEW",
-    );
+  async create(@Req() req, @Body() body: CreateJoinRequestDto) {
+    const fromUserId: number | undefined = req.user?.userId;
+    if (!fromUserId) {
+      throw new BadRequestException('Missing authenticated user');
+    }
+
+    const toUserId = Number(body.toUserId);
+    const intent = body.intent as JoinIntent;
+    const message = body.message || null;
+
+    const allowed: JoinIntent[] = ['VIEW', 'CAMERA', 'SCREEN', 'CONTROL'];
+    if (!allowed.includes(intent)) {
+      throw new BadRequestException('Invalid join intent');
+    }
+
+    const jr = await this.service.create(fromUserId, toUserId, intent, message);
+
+    return {
+      id: jr.id,
+      intent: jr.intent,
+      status: jr.status,
+    };
   }
 
   /**
-   * ADMIN / BROADCAST_MANAGER → يشوف الطلبات اللي واصلة له
-   * VIEWER → يشوف طلباته
+   * Get join requests addressed to the current user (broadcast owner).
    */
-  @Get("my")
-  async my(@Request() req) {
-    const userId = req.user.userId;
-    const role = req.user.role as UserRole;
-    if (role === UserRole.ADMIN || role === UserRole.BROADCAST_MANAGER) {
-      return this.service.listForOwner(userId);
+  @Get('my')
+  async my(@Req() req) {
+    const ownerId: number | undefined = req.user?.userId;
+    if (!ownerId) {
+      throw new BadRequestException('Missing authenticated user');
     }
-    return this.service.listMine(userId);
+    return this.service.getForOwner(ownerId);
   }
 
-  @Post(":id/approve")
-  @UseGuards(RolesGuard)
-  @Roles(UserRole.ADMIN, UserRole.BROADCAST_MANAGER)
-  async approve(@Request() req, @Param("id") id: string) {
-    return this.service.approve(req.user.userId, Number(id));
+  /**
+   * Get the last join request (any intent) between current user and a specific owner.
+   */
+  @Get('last/:ownerId')
+  async last(
+    @Req() req,
+    @Param('ownerId', ParseIntPipe) ownerId: number,
+  ) {
+    const fromUserId: number | undefined = req.user?.userId;
+    if (!fromUserId) {
+      throw new BadRequestException('Missing authenticated user');
+    }
+
+    const jr = await this.service.getLastForPair(fromUserId, ownerId);
+
+    if (!jr) {
+      return { status: 'NONE' };
+    }
+
+    return {
+      id: jr.id,
+      intent: jr.intent,
+      status: jr.status,
+    };
   }
 
-  @Post(":id/reject")
-  @UseGuards(RolesGuard)
-  @Roles(UserRole.ADMIN, UserRole.BROADCAST_MANAGER)
-  async reject(@Request() req, @Param("id") id: string) {
-    return this.service.reject(req.user.userId, Number(id));
+  /**
+   * Approve a join request. Only the target owner can approve.
+   */
+  @Post(':id/approve')
+  async approve(@Req() req, @Param('id', ParseIntPipe) id: number) {
+    const ownerId: number | undefined = req.user?.userId;
+    if (!ownerId) {
+      throw new BadRequestException('Missing authenticated user');
+    }
+    const jr = await this.service.setStatus(id, ownerId, 'APPROVED');
+    return { id: jr.id, status: jr.status };
   }
 
-  @Get("last/:ownerId")
-  async last(@Request() req, @Param("ownerId") ownerId: string) {
-    const viewerId = req.user.userId;
-    return this.service.findLastForViewerAndOwner(viewerId, Number(ownerId));
+  /**
+   * Reject a join request. Only the target owner can reject.
+   */
+  @Post(':id/reject')
+  async reject(@Req() req, @Param('id', ParseIntPipe) id: number) {
+    const ownerId: number | undefined = req.user?.userId;
+    if (!ownerId) {
+      throw new BadRequestException('Missing authenticated user');
+    }
+    const jr = await this.service.setStatus(id, ownerId, 'REJECTED');
+    return { id: jr.id, status: jr.status };
   }
 }

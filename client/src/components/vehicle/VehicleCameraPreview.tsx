@@ -14,13 +14,6 @@ interface VehicleCameraPreviewProps {
   remoteLabel?: string | null;
 }
 
-/**
- * Simple preview box for vehicle camera
- * - video element
- * - overlay if camera is off
- * - recording badge
- * - optional zoom controls
- */
 const VehicleCameraPreview: React.FC<VehicleCameraPreviewProps> = ({
   videoRef,
   isCameraOn,
@@ -39,7 +32,7 @@ const VehicleCameraPreview: React.FC<VehicleCameraPreviewProps> = ({
           ref={videoRef}
           autoPlay
           playsInline
-          className="object-cover w-full h-full transition-transform will-change-transform"
+          className="object-cover w-full h-full transition-transform bg-black will-change-transform"
           style={{ transform: `scale(${zoom})` }}
         />
 
@@ -48,9 +41,11 @@ const VehicleCameraPreview: React.FC<VehicleCameraPreviewProps> = ({
             <div className="flex items-center justify-center border rounded-full shadow-lg h-14 w-14 bg-slate-900/70 border-slate-700/50">
               <IconCamera />
             </div>
-            <p className="text-sm text-slate-200">لا يوجد بث كاميرا حالياً</p>
+            <p className="text-sm text-slate-200">
+              لا يوجد بث كاميرا حالياً
+            </p>
             <p className="text-xs text-slate-500">
-              اضغط “تشغيل الكاميرا” للبدء
+              انتظر المضيف أو شغّل الكاميرا من جهاز التحكم.
             </p>
           </div>
         )}
@@ -91,7 +86,9 @@ const VehicleCameraPreview: React.FC<VehicleCameraPreviewProps> = ({
           >
             إعادة الضبط
           </button>
-          <span className="text-xs text-slate-500">{(zoom * 100).toFixed(0)}%</span>
+          <span className="text-xs text-slate-500">
+            {(zoom * 100).toFixed(0)}%
+          </span>
         </div>
       )}
     </div>

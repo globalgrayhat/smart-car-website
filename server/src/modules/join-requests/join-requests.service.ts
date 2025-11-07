@@ -1,152 +1,120 @@
-// backend/src/modules/join-requests/join-requests.service.ts
 import {
   Injectable,
   ForbiddenException,
   NotFoundException,
-} from "@nestjs/common";
-import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+} from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository, In } from 'typeorm';
 import {
   JoinRequest,
-  JoinRequestStatus,
-} from "./join-request.entity";
-import { UsersService } from "../users/users.service";
-import { UserRole } from "../users/user.entity";
-
-type JoinIntent = "VIEW" | "CAMERA" | "ROLE_UPGRADE";
+  JoinIntent,
+  JoinStatus,
+} from './join-request.entity';
 
 @Injectable()
 export class JoinRequestsService {
   constructor(
     @InjectRepository(JoinRequest)
     private readonly repo: Repository<JoinRequest>,
-    private readonly usersService: UsersService,
   ) {}
 
-  // helper: is this user already approved for this owner (any intent)?
-  async hasApprovedBetween(
+  /**
+   * Create a new join request from one user to another.
+   */
+  async create(
+    fromUserId: number,
+    toUserId: number,
+    intent: JoinIntent,
+    message?: string,
+  ): Promise<JoinRequest> {
+    if (fromUserId === toUserId) {
+      throw new ForbiddenException('You cannot send a request to yourself');
+    }
+
+    const jr = this.repo.create({
+      fromUserId,
+      toUserId,
+      intent,
+      message: message || null,
+      status: 'PENDING',
+    });
+
+    await this.repo.save(jr);
+    return jr;
+  }
+
+  /**
+   * Get all join requests for a specific owner (toUserId).
+   */
+  async getForOwner(ownerId: number): Promise<JoinRequest[]> {
+    return this.repo.find({
+      where: { toUserId: ownerId },
+      order: { createdAt: 'DESC' },
+    });
+  }
+
+  /**
+   * Get the latest join request between fromUserId and toUserId.
+   */
+  async getLastForPair(
     fromUserId: number,
     toUserId: number,
   ): Promise<JoinRequest | null> {
     return this.repo.findOne({
-      where: {
-        fromUserId,
-        toUserId,
-        status: JoinRequestStatus.APPROVED,
-      },
-      order: { createdAt: "DESC" },
+      where: { fromUserId, toUserId },
+      order: { createdAt: 'DESC' },
     });
   }
 
-  // helper: does this user have any approved “can publish” request? (for mediasoup)
-  async hasApprovedCameraOrUpgrade(viewerId: number): Promise<boolean> {
-    const req = await this.repo.findOne({
-      where: {
-        fromUserId: viewerId,
-        status: JoinRequestStatus.APPROVED,
-      },
-      order: { createdAt: "DESC" },
-    });
-    if (!req) return false;
-    return req.intent === "CAMERA" || req.intent === "ROLE_UPGRADE";
-  }
-
-  async create(
-    fromUserId: number,
-    toUserId: number,
-    message?: string | null,
-    intent: JoinIntent = "VIEW",
-  ) {
-    // 1) ممنوع ترسل لنفسك
-    if (fromUserId === toUserId) {
-      throw new ForbiddenException("لا يمكن إرسال طلب إلى نفس الحساب.");
+  /**
+   * Update the status (APPROVED / REJECTED) of a join request.
+   * Only the target owner (toUserId) may update it.
+   */
+  async setStatus(
+    id: number,
+    ownerId: number,
+    status: JoinStatus,
+  ): Promise<JoinRequest> {
+    const jr = await this.repo.findOne({ where: { id } });
+    if (!jr) {
+      throw new NotFoundException('Join request not found');
+    }
+    if (jr.toUserId !== ownerId) {
+      throw new ForbiddenException(
+        'You are not allowed to update this join request',
+      );
     }
 
-    // 2) لو فيه موافقة سابقة لنفس المالك → لا تنشئ جديد
-    const approved = await this.hasApprovedBetween(fromUserId, toUserId);
-    if (approved) {
-      // لو كان approved بكاميرا أو ترقية → يعتبر أعلى من VIEW
-      // نرجعه نفسه
-      return approved;
+    jr.status = status;
+    return this.repo.save(jr);
+  }
+
+  /**
+   * Check if a viewer user has an APPROVED join request
+   * that allows sending media (CAMERA, SCREEN, CONTROL).
+   *
+   * - viewerUserId: the user attempting to send media (fromUserId).
+   * - ownerUserId (optional): if provided, restricts to requests towards that owner (toUserId).
+   */
+  async hasApprovedCameraOrUpgrade(
+    viewerUserId: number,
+    ownerUserId?: number,
+  ): Promise<boolean> {
+    const where: any = {
+      fromUserId: viewerUserId,
+      status: 'APPROVED' as JoinStatus,
+      intent: In<JoinIntent>(['CAMERA', 'SCREEN', 'CONTROL']),
+    };
+
+    if (ownerUserId) {
+      where.toUserId = ownerUserId;
     }
 
-    // 3) لا تنشئ طلبين معلّقين لنفس الزوج
-    const exists = await this.repo.findOne({
-      where: {
-        fromUserId,
-        toUserId,
-        status: JoinRequestStatus.PENDING,
-      },
+    const jr = await this.repo.findOne({
+      where,
+      order: { createdAt: 'DESC' },
     });
-    if (exists) return exists;
 
-    // 4) أنشئ
-    const entity = this.repo.create({
-      fromUserId,
-      toUserId,
-      message: message ?? null,
-      status: JoinRequestStatus.PENDING,
-      intent,
-    });
-    return this.repo.save(entity);
-  }
-
-  async listForOwner(ownerId: number) {
-    return this.repo.find({
-      where: { toUserId: ownerId },
-      order: { createdAt: "DESC" },
-    });
-  }
-
-  async listMine(viewerId: number) {
-    return this.repo.find({
-      where: { fromUserId: viewerId },
-      order: { createdAt: "DESC" },
-      take: 20,
-    });
-  }
-
-  async approve(ownerId: number, id: number) {
-    const req = await this.repo.findOne({ where: { id } });
-    if (!req) throw new NotFoundException("Join request not found");
-    if (req.toUserId !== ownerId)
-      throw new ForbiddenException("You are not allowed to approve this request");
-
-    req.status = JoinRequestStatus.APPROVED;
-
-    // ROLE_UPGRADE → فعلياً نرفعه
-    if (req.intent === "ROLE_UPGRADE") {
-      req.grantedRole = UserRole.BROADCAST_MANAGER;
-      await this.repo.save(req);
-
-      const viewer = await this.usersService.findById(req.fromUserId);
-      if (viewer && viewer.role === UserRole.VIEWER) {
-        await this.usersService.updateRole(
-          viewer.id,
-          UserRole.BROADCAST_MANAGER,
-        );
-      }
-      return req;
-    }
-
-    // VIEW / CAMERA → مجرد موافقة
-    req.grantedRole = null;
-    return this.repo.save(req);
-  }
-
-  async reject(ownerId: number, id: number) {
-    const req = await this.repo.findOne({ where: { id } });
-    if (!req) throw new NotFoundException("Join request not found");
-    if (req.toUserId !== ownerId)
-      throw new ForbiddenException("You are not allowed to reject this request");
-    req.status = JoinRequestStatus.REJECTED;
-    return this.repo.save(req);
-  }
-
-  async findLastForViewerAndOwner(viewerId: number, ownerId: number) {
-    return this.repo.findOne({
-      where: { fromUserId: viewerId, toUserId: ownerId },
-      order: { createdAt: "DESC" },
-    });
+    return !!jr;
   }
 }

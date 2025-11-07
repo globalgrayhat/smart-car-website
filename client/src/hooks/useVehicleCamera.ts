@@ -1,13 +1,15 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-/**
- * useVehicleCamera
- * - Thin hook over MediaContext to control local camera preview
- * - Stable stream id via localStorage (so on/off returns same broadcast)
- * - No custom payload fields that break types
- */
+// frontend/src/hooks/useVehicleCamera.ts
+// Vehicle camera hook:
+// - Wraps MediaContext camera + socket.
+// - Provides preview, recording, zoom, remote devices.
+// - Sends multiple car control event aliases for compatibility.
+
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useMedia } from "../media/MediaContext";
 
+/**
+ * Channel id used when talking to backend streams.
+ */
 const CHANNEL_ID = import.meta.env.VITE_CHANNEL_ID || "global";
 
 export function useVehicleCamera() {
@@ -16,7 +18,9 @@ export function useVehicleCamera() {
   const socket = media?.socket ?? null;
   const connStatus: "connected" | "connecting" | "disconnected" =
     media?.connStatus ?? "disconnected";
-  const streams: any[] = Array.isArray(media?.streams) ? media.streams : [];
+  const streams: any[] = Array.isArray(media?.streams)
+    ? media.streams
+    : [];
   const camera = media?.camera ?? null;
   const lastDisconnect: number | null = media?.lastDisconnect ?? null;
 
@@ -28,26 +32,29 @@ export function useVehicleCamera() {
   const [showRemotePicker, setShowRemotePicker] = useState(false);
   const [zoom, setZoom] = useState(1);
 
-  // Local recording
   const [isRecording, setIsRecording] = useState(false);
   const [recordedUrl, setRecordedUrl] = useState<string | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
 
-  // Remote cams in same channel (optional)
+  // Remote cameras in same channel.
   const myId = socket?.id;
-  const remoteCams = streams.filter((s) => s.kind === "camera" && s.ownerId !== myId);
+  const remoteCams = streams.filter(
+    (s) => s.kind === "camera" && s.ownerId !== myId,
+  );
   const hasRemoteCamera = remoteCams.length > 0;
   const primaryRemote: any = hasRemoteCamera ? remoteCams[0] : null;
 
-  // Bind context camera to this hook video
+  // Bind media camera track into local video element.
   useEffect(() => {
     if (videoRef.current && camera?.bindVideo) {
       camera.bindVideo(videoRef.current);
     }
   }, [camera]);
 
-  // Actually start local camera (calls MediaContext.camera.start)
+  /**
+   * Actually start local camera through MediaContext.
+   */
   const startLocalCamera = useCallback(async () => {
     if (connStatus !== "connected") return;
     if (!camera?.start) return;
@@ -55,7 +62,9 @@ export function useVehicleCamera() {
     setHasStartedOnce(true);
   }, [camera, connStatus]);
 
-  // Ask user before starting camera (first time)
+  /**
+   * Request camera start with a short countdown on first time.
+   */
   const requestStartCamera = () => {
     if (camera?.isOn) return;
     if (!hasStartedOnce) {
@@ -66,7 +75,7 @@ export function useVehicleCamera() {
     }
   };
 
-  // Countdown
+  // Countdown timer.
   useEffect(() => {
     if (countdown === null) return;
     if (countdown === 0) {
@@ -81,36 +90,54 @@ export function useVehicleCamera() {
     return () => clearTimeout(t);
   }, [countdown, startLocalCamera]);
 
-  // Stop local camera
+  /**
+   * Stop local camera.
+   */
   const stopCamera = () => {
     camera?.stop?.();
     setShowPrompt(false);
     setCountdown(null);
   };
 
-  // Stop remote camera (same channel)
+  /**
+   * Ask backend to stop a remote stream in this channel.
+   */
   const stopRemoteCamera = (streamId?: string | null) => {
     if (!socket || connStatus !== "connected") return;
     const target = streamId || primaryRemote?.streamId;
     if (!target) return;
-    socket.emit("stream:stop", { channelId: CHANNEL_ID, streamId: target });
+    socket.emit("stream:stop", {
+      channelId: CHANNEL_ID,
+      streamId: target,
+    });
   };
 
-  // Local recording from preview
+  /**
+   * Local recording from preview video element.
+   */
   const startRecording = () => {
     const v = videoRef.current;
     const src = (v?.srcObject as MediaStream) || null;
-    if (!v || !src) return;
-    const rec = new MediaRecorder(src, { mimeType: "video/webm;codecs=vp8" });
+    if (!v || !src || isRecording) return;
+
+    const rec = new MediaRecorder(src, {
+      mimeType: "video/webm;codecs=vp8",
+    });
     recorderRef.current = rec;
     chunksRef.current = [];
-    rec.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+
+    rec.ondataavailable = (e) => {
+      if (e.data.size > 0) chunksRef.current.push(e.data);
+    };
     rec.onstop = () => {
-      const blob = new Blob(chunksRef.current, { type: "video/webm" });
+      const blob = new Blob(chunksRef.current, {
+        type: "video/webm",
+      });
       const url = URL.createObjectURL(blob);
       if (recordedUrl) URL.revokeObjectURL(recordedUrl);
       setRecordedUrl(url);
     };
+
     rec.start(1000);
     setIsRecording(true);
   };
@@ -122,38 +149,60 @@ export function useVehicleCamera() {
     }
     setIsRecording(false);
   };
+
+  /**
+   * Ask a remote device to start camera (via socket).
+   */
   const requestRemoteDeviceCamera = (ownerId: string) => {
     if (!socket || connStatus !== "connected") return;
-    socket.emit("device:camera:request", { channelId: CHANNEL_ID, targetId: ownerId });
+    socket.emit("device:camera:request", {
+      channelId: CHANNEL_ID,
+      targetId: ownerId,
+    });
     setShowRemotePicker(false);
   };
 
+  /**
+   * Send car control command.
+   * We emit multiple event names to support different gateway versions.
+   */
   const sendCarCommand = (action: string, value?: unknown) => {
     if (!socket || connStatus !== "connected") return;
+    socket.emit("vehicle:control", { action, value });
+    socket.emit("car:control", { action, value });
     socket.emit("car-command", { action, value });
   };
-  // Screenshot from preview
+
+  /**
+   * Take screenshot from local preview video.
+   */
   const handleScreenshot = () => {
     const video = videoRef.current;
     if (!video || !video.srcObject) return;
-    const c = document.createElement("canvas");
-    c.width = video.videoWidth || 1280;
-    c.height = video.videoHeight || 720;
-    const ctx = c.getContext("2d");
+
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth || 1280;
+    canvas.height = video.videoHeight || 720;
+    const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    ctx.drawImage(video, 0, 0, c.width, c.height);
-    const url = c.toDataURL("image/png");
+
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    const url = canvas.toDataURL("image/png");
     const a = document.createElement("a");
     a.href = url;
     a.download = `vehicle-camera-${Date.now()}.png`;
     a.click();
   };
 
-  // Zoom helpers
-  const zoomIn = () => setZoom((z) => Math.min(2.5, +(z + 0.1).toFixed(1)));
-  const zoomOut = () => setZoom((z) => Math.max(0.5, +(z - 0.1).toFixed(1)));
+  // Zoom controls.
+  const zoomIn = () =>
+    setZoom((z) => Math.min(2.5, +(z + 0.1).toFixed(1)));
+  const zoomOut = () =>
+    setZoom((z) => Math.max(0.5, +(z - 0.1).toFixed(1)));
   const zoomReset = () => setZoom(1);
 
+  // Cleanup old recording URL on unmount / change.
   useEffect(() => {
     return () => {
       if (recordedUrl) URL.revokeObjectURL(recordedUrl);
@@ -170,27 +219,33 @@ export function useVehicleCamera() {
     showPrompt,
     countdown,
     isRemoteCamera: hasRemoteCamera,
-    remoteLabel: primaryRemote ? `Remote camera (${String(primaryRemote.ownerId).slice(0, 5)}…)` : null,
+    remoteLabel: primaryRemote
+      ? `كاميرا بعيدة (${String(primaryRemote.ownerId).slice(
+          0,
+          5,
+        )}…)`
+      : null,
     remoteStreamId: primaryRemote?.streamId || null,
     remoteDevices: remoteCams,
-    // recording
+    // Recording
     isRecording,
     recordedUrl,
     startRecording,
     stopRecording,
+    // Remote picker
     showRemotePicker,
     setShowRemotePicker,
     requestRemoteDeviceCamera,
-    // zoom
+    // Zoom
     zoom,
     zoomIn,
     zoomOut,
     zoomReset,
-    // actions
+    // Actions
     requestStartCamera,
     stopCamera,
     stopRemoteCamera,
     handleScreenshot,
-    sendCarCommand
+    sendCarCommand,
   };
 }

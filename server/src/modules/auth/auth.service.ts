@@ -22,6 +22,19 @@ export class AuthService {
     return user;
   }
 
+  private getPermissions(role: UserRole) {
+    switch (role) {
+      case UserRole.ADMIN:
+        return ["*"];
+      case UserRole.BROADCAST_MANAGER:
+        return ["broadcast:*", "vehicle:*", "mediasoup:*"];
+      case UserRole.VIEWER:
+        return ["view:*"];
+      default:
+        return [];
+    }
+  }
+
   async login(user: User) {
     const payload = {
       sub: user.id,
@@ -42,19 +55,6 @@ export class AuthService {
     };
   }
 
-  private getPermissions(role: UserRole) {
-    switch (role) {
-      case UserRole.ADMIN:
-        return ["*"];
-      case UserRole.BROADCAST_MANAGER:
-        return ["broadcast:*", "vehicle:*", "mediasoup:*"];
-      case UserRole.VIEWER:
-        return ["view:*"];
-      default:
-        return [];
-    }
-  }
-
   async register(dto: CreateUserDto) {
     const existingUser = await this.usersService.findByEmail(dto.email);
     if (existingUser) {
@@ -68,24 +68,6 @@ export class AuthService {
       dto.role,
     );
 
-    const payload = {
-      sub: newUser.id,
-      role: newUser.role,
-      perms: this.getPermissions(newUser.role),
-      username: newUser.username,
-      email: newUser.email,
-    };
-
-    const access_token = await this.jwtService.signAsync(payload);
-
-    return {
-      access_token,
-      user: {
-        id: newUser.id,
-        username: newUser.username,
-        email: newUser.email,
-        role: newUser.role,
-      },
-    };
+    return this.login(newUser);
   }
 }

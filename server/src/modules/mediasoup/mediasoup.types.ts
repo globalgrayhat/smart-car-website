@@ -4,16 +4,9 @@ import type {
   WebRtcTransport,
   Producer,
   Consumer,
-  RtpCapabilities,
-} from "mediasoup/node/lib/types";
+} from 'mediasoup/node/lib/types';
 
-export type MediaRole =
-  | "ADMIN"
-  | "BROADCAST_MANAGER"
-  | "VIEWER"
-  | "VEHICLE";
-
-export type MediaKind = "camera" | "screen" | "audio" | "custom";
+export type MediaRole = 'ADMIN' | 'BROADCAST_MANAGER' | 'VIEWER' | 'VEHICLE';
 
 export interface MediasoupPeer {
   id: string;
@@ -36,17 +29,5 @@ export interface MediasoupRoom {
 
 export interface CreateTransportOpts {
   peerId: string;
-  direction: "send" | "recv";
-}
-
-export interface JoinPayload {
-  channelId: string;
-  role: MediaRole;
-  userId?: number;
-  username?: string;
-}
-
-export interface VehicleConnectPayload {
-  apikey: string;
-  channelId?: string;
+  direction: 'send' | 'recv';
 }

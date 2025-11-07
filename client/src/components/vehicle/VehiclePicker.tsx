@@ -1,24 +1,30 @@
-// src/components/vehicle/VehiclePicker.tsx
+/* eslint-disable @typescript-eslint/no-explicit-any */
+/**
+ * VehiclePicker
+ *
+ * Modal that lists active broadcast devices (host/vehicle/screen) from /broadcast/public.
+ * - Ignores audio-only sources.
+ * - If the selected device belongs to current user → direct open.
+ * - Otherwise delegates request handling to parent via onRequested.
+ */
+
 import React, { useEffect, useState } from "react";
 import { api } from "../../services/api";
 
-// NOTE: type-only import مو ضروري هنا لأننا داخل نفس الملف
 export type RemoteDevice = {
-  ownerId: string;               // socket.id للجهاز
-  userId: number | null;         // رقم مستخدم الجهاز (يرسله الباكند)
-  label?: string;
-  streamId?: string | null;
-  onAir?: boolean;
-  isMine?: boolean;              // لو الباكند علّمه إنه لنفس الحساب
+  ownerId: string;
+  userId: number | null;
+  label: string;
+  kind: string;
+  onAir: boolean;
+  isMine: boolean;
 };
 
 type Props = {
   visible: boolean;
   onClose: () => void;
   currentUserId: number | null;
-  // لو نفس الحساب → افتح مباشرة
   onDirectOpen?: (dev: RemoteDevice) => void;
-  // لو حساب مختلف → نقول للصفحة "تم الإرسال"
   onRequested?: (dev: RemoteDevice) => void;
 };
 
@@ -34,7 +40,6 @@ const VehiclePicker: React.FC<Props> = ({
   const [err, setErr] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  // كل ما فتحنا المودال نجيب الأجهزة
   useEffect(() => {
     if (!visible) return;
 
@@ -42,49 +47,81 @@ const VehiclePicker: React.FC<Props> = ({
       setLoading(true);
       setErr(null);
       try {
-        // GET /api/signal/devices
-        const data = await api.get("/signal/devices");
-        // نتأكد إنه مصفوفة
-        const list: RemoteDevice[] = Array.isArray(data)
-          ? data
-          : [];
+        const res = await api.get("/broadcast/public");
+        const list = Array.isArray(res) ? res : [];
 
-        setDevices(list);
+        const mapped: RemoteDevice[] = list
+          .filter((s: any) => {
+            if (!s || !s.onAir) return false;
+            const kind = String(s.kind || "").toUpperCase();
+            const title = String(s.title || "").toLowerCase();
+            if (title.includes("audio") || kind.includes("AUDIO")) return false;
+            return (
+              kind === "HOST_CAMERA" ||
+              kind === "CAR_CAMERA" ||
+              kind === "SCREEN"
+            );
+          })
+          .map((s: any) => {
+            const ownerUserId =
+              typeof s.ownerUserId === "number" ? s.ownerUserId : null;
+            const isMine =
+              currentUserId != null &&
+              ownerUserId != null &&
+              Number(ownerUserId) === Number(currentUserId);
+
+            const id: string =
+              (s.externalId && String(s.externalId)) ||
+              (s.ownerSocketId && String(s.ownerSocketId)) ||
+              String(s.id);
+
+            return {
+              ownerId: id,
+              userId: ownerUserId,
+              label:
+                s.title ||
+                (String(s.kind || "").toUpperCase() === "CAR_CAMERA"
+                  ? "كاميرا مركبة"
+                  : String(s.kind || "").toUpperCase() === "SCREEN"
+                  ? "مشاركة شاشة"
+                  : "كاميرا المضيف"),
+              kind: String(s.kind || ""),
+              onAir: !!s.onAir,
+              isMine,
+            };
+          });
+
+        setDevices(mapped);
       } catch (e: any) {
-        setErr(e?.message || "فشل تحميل الأجهزة");
+        setErr(e?.message || "تعذّر تحميل قائمة الأجهزة النشطة.");
         setDevices([]);
       } finally {
         setLoading(false);
       }
     })();
-  }, [visible]);
+  }, [visible, currentUserId]);
 
-  // زر "طلب تشغيل" / "فتح"
   const handlePick = async (dev: RemoteDevice) => {
-    // هل هذا الجهاز لي؟
     const sameUser =
+      dev.isMine ||
       (typeof dev.userId === "number" &&
-        currentUserId !== null &&
-        dev.userId === currentUserId) ||
-      dev.isMine === true;
+        currentUserId != null &&
+        dev.userId === currentUserId);
 
-    // لو لنفس الحساب: افتح مباشرة بدون POST
     if (sameUser) {
       onDirectOpen?.(dev);
       onClose();
       return;
     }
 
-    // حساب مختلف → نرسل طلب للباكند
     setBusyId(dev.ownerId);
     setErr(null);
+
     try {
-      // هذا الراوت اللي اتفقنا عليه
-      await api.post(`/signal/devices/${dev.ownerId}/attach`);
       onRequested?.(dev);
       onClose();
     } catch (e: any) {
-      setErr(e?.message || "فشل إرسال الطلب");
+      setErr(e?.message || "تعذّر إرسال طلب الارتباط.");
     } finally {
       setBusyId(null);
     }
@@ -93,15 +130,15 @@ const VehiclePicker: React.FC<Props> = ({
   if (!visible) return null;
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/60 backdrop-blur-sm">
-      <div className="w-full max-w-md p-4 space-y-3 border rounded-lg bg-slate-900 border-slate-700">
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm">
+      <div className="w-full max-w-md p-4 space-y-3 border shadow-2xl rounded-xl bg-slate-900/95 border-slate-700">
         <div className="flex items-center justify-between gap-3">
           <h4 className="text-sm font-semibold text-white">
-            اختر مركبة / جهاز لتشغيل الكاميرا
+            اختيار مركبة أو جهاز للبث
           </h4>
           <button
             onClick={onClose}
-            className="px-2 py-1 text-xs rounded bg-slate-800 text-slate-100"
+            className="px-2 py-1 text-xs rounded bg-slate-800 text-slate-100 hover:bg-slate-700"
           >
             إغلاق
           </button>
@@ -114,52 +151,48 @@ const VehiclePicker: React.FC<Props> = ({
         )}
 
         {loading ? (
-          <p className="text-xs text-slate-400">جاري التحميل…</p>
+          <p className="text-xs text-slate-400">جاري تحميل المصادر النشطة…</p>
         ) : devices.length === 0 ? (
-          <p className="text-xs text-slate-500">ما في أجهزة متاحة حالياً.</p>
+          <p className="text-xs text-slate-500">
+            لا توجد كاميرات أو شاشات نشطة حالياً.
+          </p>
         ) : (
           <div className="space-y-2">
             {devices.map((dev) => {
               const isMine =
+                dev.isMine ||
                 (typeof dev.userId === "number" &&
-                  currentUserId !== null &&
-                  dev.userId === currentUserId) ||
-                dev.isMine;
+                  currentUserId != null &&
+                  dev.userId === currentUserId);
 
               return (
                 <button
                   key={dev.ownerId}
-                  onClick={() => handlePick(dev)}
+                  onClick={() => void handlePick(dev)}
                   disabled={busyId === dev.ownerId}
-                  className={`flex items-center justify-between w-full px-3 py-2 text-xs rounded-md bg-slate-800/60 hover:bg-slate-700 transition ${
+                  className={`flex items-center justify-between w-full px-3 py-2 text-xs rounded-md bg-slate-800/70 hover:bg-slate-700 transition ${
                     busyId === dev.ownerId ? "opacity-60" : ""
                   }`}
                 >
-                  <span>
-                    {dev.label || "كاميرا جهاز"}
-                    <span className="ml-1 text-[9px] text-slate-400">
-                      ({dev.ownerId.slice(0, 5)}…)
+                  <span className="flex flex-col text-right">
+                    <span className="text-slate-100">{dev.label}</span>
+                    <span className="text-[9px] text-slate-500">
+                      معرف المصدر: {dev.ownerId.slice(0, 8)}…
+                      {isMine && " • نفس حساب الإدارة"}
                     </span>
-                    {isMine ? (
-                      <span className="ml-2 text-[9px] text-emerald-400">
-                        (نفس الحساب)
-                      </span>
-                    ) : null}
                   </span>
                   <span
                     className={`px-2 py-0.5 text-[9px] rounded ${
                       busyId === dev.ownerId
                         ? "bg-slate-500 text-slate-100 animate-pulse"
-                        : isMine
-                        ? "bg-emerald-500/80 text-slate-950"
-                        : "bg-emerald-500/80 text-slate-950"
+                        : "bg-emerald-500/90 text-slate-950"
                     }`}
                   >
                     {busyId === dev.ownerId
-                      ? "يرسل…"
+                      ? "جاري الإرسال..."
                       : isMine
                       ? "فتح مباشر"
-                      : "طلب تشغيل"}
+                      : "اختيار"}
                   </span>
                 </button>
               );

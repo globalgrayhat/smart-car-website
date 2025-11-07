@@ -1,4 +1,12 @@
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne } from "typeorm";
+// server/src/modules/broadcast/entities/broadcast-source.entity.ts
+
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  ManyToOne,
+  JoinColumn,
+} from "typeorm";
 import { BroadcastSession } from "./broadcast-session.entity";
 
 export enum BroadcastSourceType {
@@ -16,12 +24,13 @@ export class BroadcastSource {
   @ManyToOne(() => BroadcastSession, (s) => s.sources, {
     onDelete: "CASCADE",
   })
+  @JoinColumn({ name: "sessionId" })
   session: BroadcastSession;
 
   @Column()
   sessionId: number;
 
-  @Column()
+  @Column({ length: 191 })
   name: string;
 
   @Column({
@@ -36,14 +45,22 @@ export class BroadcastSource {
   @Column({ default: false })
   isMuted: boolean;
 
-  // mediasoup producer id OR external stream id
-  @Column({ nullable: true })
+  @Column({ nullable: true, length: 191 })
   externalId: string | null;
 
-  // socket id of owner (if online)
-  @Column({ nullable: true })
+  @Column({ nullable: true, length: 191 })
   ownerSocketId: string | null;
 
-  @Column({ type: "json", nullable: true })
-  meta: any;
+  // نخزن JSON كنص لتفادي مشكلة Row size
+  @Column({
+    type: "text",
+    nullable: true,
+    transformer: {
+      to: (value?: any) =>
+        value === undefined || value === null ? null : JSON.stringify(value),
+      from: (value?: string | null) =>
+        !value ? null : JSON.parse(value),
+    },
+  })
+  meta: any | null;
 }

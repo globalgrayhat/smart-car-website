@@ -19,6 +19,7 @@ export class UsersService {
   async createAdminIfNotExists(): Promise<void> {
     const adminEmail = "admin@smartcar.local";
     const exists = await this.repo.findOne({ where: { email: adminEmail } });
+
     if (!exists) {
       const user = this.repo.create({
         email: adminEmail,
@@ -30,11 +31,6 @@ export class UsersService {
     }
   }
 
-  async updateRole(userId: number, role: UserRole) {
-    await this.repo.update({ id: userId }, { role });
-    return this.repo.findOne({ where: { id: userId } });
-  }
-
   async createUser(
     email: string,
     username: string,
@@ -42,16 +38,16 @@ export class UsersService {
     role: UserRole = UserRole.VIEWER,
   ): Promise<User> {
     const passwordHash = await bcrypt.hash(password, 10);
-    const entity = this.repo.create({
-      email,
-      username,
-      passwordHash,
-      role,
-    });
+    const entity = this.repo.create({ email, username, passwordHash, role });
     return this.repo.save(entity);
   }
 
   async all(): Promise<User[]> {
     return this.repo.find();
+  }
+
+  async updateRole(userId: number, role: UserRole) {
+    await this.repo.update({ id: userId }, { role });
+    return this.repo.findOne({ where: { id: userId } });
   }
 }

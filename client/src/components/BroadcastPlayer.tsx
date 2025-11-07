@@ -1,86 +1,95 @@
-// src/components/BroadcastPlayer.tsx
+/* eslint-disable @typescript-eslint/no-explicit-any */
+/**
+ * BroadcastPlayer
+ *
+ * Generic HLS/MP4 player:
+ * - Uses src, playbackUrl, or derives URL from VITE_PLAYBACK_BASE + streamId.
+ * - Supports native HLS, hls.js (if available), and direct file playback.
+ * - Responsive container friendly for various layouts.
+ */
+
 import React, { useEffect, useRef } from "react";
 
 type BroadcastPlayerProps = {
-  // explicit full url from backend
   src?: string | null;
-  // maybe backend already gave us playbackUrl
   playbackUrl?: string | null;
-  // fallback info
   streamId?: string | null;
-  ownerId?: string | null;
+  ownerId?: string | number | null;
   kind?: "camera" | "screen" | "custom";
 };
 
-/**
- * Generic player (safe version):
- * - try: src
- * - then: playbackUrl
- * - then: VITE_PLAYBACK_BASE + streamId   ← instead of /api/broadcast/play/:id
- * - if nothing → show placeholder
- *
- * NOTE:
- * - This does NOT call /api/broadcast/play/:id anymore because backend doesn’t have it.
- * - Define VITE_PLAYBACK_BASE=http://localhost:8000/hls (مثلاً) لو عندك سيرفر بث مستقل.
- */
 const BroadcastPlayer: React.FC<BroadcastPlayerProps> = ({
   src,
   playbackUrl,
   streamId,
-  ownerId, // not used now, لكن خله يمكن تحتاجه بعدين
+  ownerId, // reserved for future usage
   kind = "camera",
 }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
-  // optional base, e.g. http://localhost:8000/hls
-  const PLAYBACK_BASE =
-    import.meta.env.VITE_PLAYBACK_BASE &&
-    import.meta.env.VITE_PLAYBACK_BASE.trim().replace(/\/+$/, "");
+  const PLAYBACK_BASE = (import.meta.env.VITE_PLAYBACK_BASE || "")
+    .toString()
+    .trim()
+    .replace(/\/+$/, "");
 
-  // build final url – all safe
-  const finalUrl =
-    src ||
-    playbackUrl ||
+  const finalUrl: string | null =
+    (src && src.trim()) ||
+    (playbackUrl && playbackUrl.trim()) ||
     (PLAYBACK_BASE && streamId
-      ? `${PLAYBACK_BASE}/${streamId}.m3u8`
+      ? `${PLAYBACK_BASE}/${String(streamId).trim()}.m3u8`
       : null);
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !finalUrl) return;
 
-    // native HLS
-    if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = finalUrl;
-      video.play().catch(() => {});
-      return;
-    }
+    let hls: any | null = null;
 
-    // hls.js support (if loaded globally)
-    const HlsCtor = (window as any).Hls;
-    if (HlsCtor) {
-      const hls = new HlsCtor();
-      hls.loadSource(finalUrl);
-      hls.attachMedia(video);
-      hls.on(HlsCtor.Events.MANIFEST_PARSED, () => {
-        video.play().catch(() => {});
-      });
-      return () => {
-        hls.destroy();
-      };
-    }
+    const setup = async () => {
+      try {
+        if (video.canPlayType("application/vnd.apple.mpegurl")) {
+          video.src = finalUrl;
+          await video.play().catch(() => {});
+          return;
+        }
 
-    // normal mp4 / webm
-    video.src = finalUrl;
-    video.play().catch(() => {});
+        const HlsCtor = (window as any).Hls;
+        if (HlsCtor && HlsCtor.isSupported?.()) {
+          hls = new HlsCtor();
+          hls.loadSource(finalUrl);
+          hls.attachMedia(video);
+          hls.on(HlsCtor.Events.MANIFEST_PARSED, () => {
+            video.play().catch(() => {});
+          });
+          return;
+        }
+
+        video.src = finalUrl;
+        await video.play().catch(() => {});
+      } catch {
+        // ignore setup errors
+      }
+    };
+
+    void setup();
+
+    return () => {
+      if (hls) {
+        try {
+          hls.destroy();
+        } catch {
+          // ignore
+        }
+      }
+    };
   }, [finalUrl]);
 
   if (!finalUrl) {
     return (
-      <div className="flex flex-col items-center justify-center w-full h-full gap-1 text-xs rounded-md bg-slate-950/60 text-slate-400">
-        <p>No playback URL available.</p>
+      <div className="flex flex-col items-center justify-center w-full h-full gap-1 px-3 py-4 text-xs text-center rounded-md bg-slate-950/70 text-slate-300">
+        <p>لا يوجد رابط تشغيل متاح للبث حالياً.</p>
         <p className="text-[10px] text-slate-500">
-          Backend didn’t expose a broadcast play endpoint.
+          يرجى التحقق من إعدادات البث أو ضبط قيمة VITE_PLAYBACK_BASE في النظام.
         </p>
       </div>
     );

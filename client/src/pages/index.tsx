@@ -1,8 +1,10 @@
-// src/pages/index.tsx
-// Home page – safe-with-signal version
-// - Reads connection from MediaContext
-// - Guards against undefined media / streams
-// - Shows camera + screen panels even if signal server is late
+// Home page:
+// - High-level overview for main dashboard.
+// - Reads connection & streams from MediaContext.
+// - Shows server status, vehicle status, battery, direction, screen and camera panels.
+// - Integrates JoinRequestBar for viewers.
+// - Arabic UI text, English comments.
+
 import React, { useEffect, useState } from "react";
 import { useMedia } from "../media/MediaContext";
 
@@ -15,15 +17,14 @@ import CameraPanel from "../components/home/CameraPanel";
 import JoinRequestBar from "../components/JoinRequestBar";
 
 const Home: React.FC = () => {
-  // ⚠️ media could be undefined for a short time (provider still booting)
   const media = useMedia() as any;
 
-  // connection state – fallbacks
+  // Connection status from MediaContext with safe fallback
   const connStatus: "connecting" | "connected" | "disconnected" =
     media?.connStatus ?? "disconnected";
   const lastDisconnect: number | null = media?.lastDisconnect ?? null;
 
-  // live streams coming from mediasoup/signal
+  // Streams array: depends on mediasoup integration; keep it defensive
   const streams: Array<{ kind: string; ownerId: string; onAir?: boolean }> =
     Array.isArray(media?.streams) ? media.streams : [];
 
@@ -33,7 +34,7 @@ const Home: React.FC = () => {
   const [vehicleCameraOwner, setVehicleCameraOwner] =
     useState<string | null>(null);
 
-  // detect mobile once
+  // Detect mobile layout once and on resize
   useEffect(() => {
     const check = () => {
       const mobile =
@@ -46,18 +47,19 @@ const Home: React.FC = () => {
     return () => window.removeEventListener("resize", check);
   }, []);
 
-  // fake battery (just UI)
+  // Fake battery fluctuation (purely visual)
   useEffect(() => {
     const id = setInterval(() => {
       setBatteryLevel((prev) => {
-        const next = prev + (Math.random() > 0.5 ? 1 : -1);
+        const delta = Math.random() > 0.5 ? 1 : -1;
+        const next = prev + delta;
         return Math.max(10, Math.min(100, Math.round(next)));
       });
     }, 8000);
     return () => clearInterval(id);
   }, []);
 
-  // who is streaming camera now (onAir)
+  // Determine who is currently streaming vehicle camera (onAir)
   useEffect(() => {
     const cam = streams.find((st) => st.kind === "camera" && st.onAir);
     setVehicleCameraOwner(cam ? cam.ownerId : null);
@@ -69,10 +71,10 @@ const Home: React.FC = () => {
         لوحة التحكم الرئيسية
       </h1>
 
-      {/* viewer join-requests bar (only for VIEWER) */}
+      {/* Viewer join-requests quick bar (for requesting VIEW / CAMERA / SCREEN / CONTROL) */}
       <JoinRequestBar />
 
-      {/* top status cards */}
+      {/* Top status summary cards */}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
         <ServerStatusCard status={connStatus} lastDisconnect={lastDisconnect} />
         <VehicleStatusCard vehicleCameraOwner={vehicleCameraOwner} />
@@ -80,14 +82,14 @@ const Home: React.FC = () => {
         <DirectionCard direction={direction} />
       </div>
 
-      {/* main layout */}
+      {/* Main layout: screen + camera/control */}
       <div className="grid items-start grid-cols-1 gap-6 xl:grid-cols-3">
-        {/* screen share (2 cols on desktop) */}
+        {/* Screen share block (takes 2 columns on desktop) */}
         <div className="flex flex-col gap-4 xl:col-span-2">
           <ScreenPanel connStatus={connStatus} isMobile={isMobile} />
         </div>
 
-        {/* camera + car control */}
+        {/* Camera panel + direction control */}
         <div className="flex flex-col gap-4">
           <CameraPanel
             connStatus={connStatus}

@@ -1,0 +1,72 @@
+version: "3.8"
+
+services:
+  # ============================================================
+  # Redis (for local development)
+  # - Your local NestJS server (server/) connects to:
+  #   REDIS_URL=redis://localhost:6379
+  # - Always safe to keep this running.
+  # Start infra only (Redis, and MySQL/phpMyAdmin if enabled):
+  #  *  docker compose -f docker-compose.local.yml up -d
+  #    Stop infra:
+  #  *  docker compose -f docker-compose.local.yml down
+  # ============================================================
+  redis:
+    image: redis:7
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ============================================================
+  # MySQL (OPTIONAL for local dev, if you don't already have XAMPP/WAMP)
+  # - Disable if you already have MySQL on your host.
+  # - If enabled, use:
+  #   DB_HOST=localhost
+  #   DB_PORT=3307 (example below)
+  # ============================================================
+  # mysql:
+  #   image: mysql:8
+  #   restart: always
+  #   environment:
+  #     MYSQL_ROOT_PASSWORD: password
+  #     MYSQL_DATABASE: smartcar
+  #     MYSQL_USER: smartcar_user
+  #     MYSQL_PASSWORD: userpass
+  #   ports:
+  #     # map to 3307 to avoid conflict with your host MySQL
+  #     - "3307:3306"
+  #   volumes:
+  #     - mysql_data:/var/lib/mysql
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "mysqladmin ping -ppassword -h 127.0.0.1 --silent"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 10
+
+  # ============================================================
+  # phpMyAdmin (OPTIONAL)
+  # - Only useful if the MySQL container above is enabled.
+  # - Access: http://localhost:8081
+  # ============================================================
+  # phpmyadmin:
+  #   image: phpmyadmin:latest
+  #   restart: always
+  #   environment:
+  #     PMA_HOST: mysql
+  #     PMA_USER: smartcar_user
+  #     PMA_PASSWORD: userpass
+  #   ports:
+  #     - "8081:80"
+  #   depends_on:
+  #     - mysql
+
+volumes:
+  redis_data:
+  mysql_data:

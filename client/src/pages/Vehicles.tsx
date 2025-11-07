@@ -1,93 +1,117 @@
-// src/pages/Vehicles.tsx
-// Vehicles page – admin view for available remote devices
-// - Fetches /signal/devices over REST (with api wrapper that already has base URL + token)
-// - Lets admin send "attach" to other accounts
-// - Integrates with MediaContext to show signal status on top
-import React, { useEffect, useState } from "react";
+// Vehicles page:
+// - Lists registered vehicles for current user from /vehicles.
+// - Uses /broadcast/public to highlight which owners have active camera streams.
+// - Replaces old /signal/devices and /attach logic.
+// - UI text Arabic, comments English.
+
+import React, { useEffect, useState, useCallback } from "react";
 import { api } from "../services/api";
-import { useMedia } from "../media/MediaContext";
 import { useAuth } from "../auth/AuthContext";
 
-type RemoteDevice = {
-  ownerId: string; // socket.id
-  userId: number | null;
-  label?: string;
-  streamId?: string | null;
-  onAir?: boolean;
-  isMine?: boolean;
+type PublicSourceKind =
+  | "SCREEN"
+  | "HOST_CAMERA"
+  | "CAR_CAMERA"
+  | "GUEST_CAMERA";
+
+type PublicSource = {
+  id: number | string;
+  title: string | null;
+  kind: PublicSourceKind;
+  onAir: boolean;
+  externalId: string | null;
+  ownerId: number | null;
+  ownerUserId: number | null;
+  ownerSocketId: string | null;
+};
+
+type Vehicle = {
+  id: number;
+  ownerUserId: number;
+  name: string;
+  apiKey: string;
+  isOnline: boolean;
+  lastSeen: string | null;
+  createdAt: string;
 };
 
 const Vehicles: React.FC = () => {
-  const media = useMedia() as any;
   const { user } = useAuth();
+  const u = user as any;
 
-  const connStatus: "connected" | "connecting" | "disconnected" =
-    media?.connStatus ?? "disconnected";
-  const lastDisconnect: number | null = media?.lastDisconnect ?? null;
+  // Normalize current user id from JWT payload shape
+  const currentUserId: number | null =
+    (typeof u?.id === "number" && u.id) ||
+    (typeof u?.userId === "number" && u.userId) ||
+    null;
 
-  const [devices, setDevices] = useState<RemoteDevice[]>([]);
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [sources, setSources] = useState<PublicSource[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [busyId, setBusyId] = useState<string | null>(null);
 
-  const currentUserId =
-    typeof user?.id === "number"
-      ? user.id
-      : typeof (user as any)?.userId === "number"
-        ? (user as any).userId
-        : null;
-
-  // load devices once
-  const load = async () => {
-    setLoading(true);
-    setErr(null);
-    try {
-      const data = await api.get("/signal/devices");
-      const list: RemoteDevice[] = Array.isArray(data) ? data : [];
-      setDevices(list);
-    } catch (e: any) {
-      setErr(e?.message || "فشل تحميل الأجهزة المتصلة");
-      setDevices([]);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    void load();
-  }, []);
-
-  const handleAttach = async (dev: RemoteDevice) => {
-    // if it's mine → we don't need to ask backend, just show hint
-    const same =
-      (typeof dev.userId === "number" &&
-        currentUserId !== null &&
-        dev.userId === currentUserId) ||
-      dev.isMine;
-    if (same) {
-      // in a real UI you could dispatch event to open local camera of that device
-      alert("هذا الجهاز لنفس الحساب – افتحه من صفحة التحكّم.");
+  /**
+   * Fetch:
+   * - /vehicles for current user's registered vehicles.
+   * - /broadcast/public for active on-air sources (to show which owners have active cameras).
+   */
+  const load = useCallback(async () => {
+    if (!currentUserId) {
+      setVehicles([]);
+      setSources([]);
+      setErr("يجب تسجيل الدخول لعرض المركبات.");
       return;
     }
 
-    setBusyId(dev.ownerId);
+    setLoading(true);
     setErr(null);
+
     try {
-      await api.post(`/signal/devices/${dev.ownerId}/attach`);
+      const [vehRes, srcRes] = await Promise.all([
+        api.get("/vehicles"),
+        api.get("/broadcast/public"),
+      ]);
+
+      const vList: Vehicle[] = Array.isArray(vehRes) ? vehRes : [];
+      const sList: PublicSource[] = Array.isArray(srcRes) ? srcRes : [];
+
+      setVehicles(vList);
+      setSources(sList);
     } catch (e: any) {
-      setErr(e?.message || "فشل إرسال طلب التشغيل");
+      setErr(e?.message || "فشل تحميل بيانات المركبات.");
+      setVehicles([]);
+      setSources([]);
     } finally {
-      setBusyId(null);
+      setLoading(false);
     }
+  }, [currentUserId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  // Helper: check if there is any active camera-like source for given owner
+  const hasActiveCameraForOwner = (ownerUserId: number): boolean => {
+    return sources.some(
+      (s) =>
+        s.onAir &&
+        s.ownerUserId === ownerUserId &&
+        (s.kind === "HOST_CAMERA" ||
+          s.kind === "CAR_CAMERA" ||
+          s.kind === "GUEST_CAMERA"),
+    );
   };
 
   return (
     <div className="space-y-5 animate-fadeIn">
+      {/* Header */}
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h2 className="text-xl font-semibold text-white">الأجهزة المتصلة</h2>
+          <h2 className="text-xl font-semibold text-white">
+            مركباتي وأجهزة البث
+          </h2>
           <p className="text-sm text-slate-400">
-            عرض كل السوكيتات / المركبات المربوطة حالياً على خادم الإشارة.
+            عرض المركبات المسجّلة ومتابعة حالة الاتصال والبث المباشر لكل مركبة.
           </p>
         </div>
         <button
@@ -98,98 +122,82 @@ const Vehicles: React.FC = () => {
         </button>
       </div>
 
-      {/* connection card */}
-      <div className="flex items-center gap-2 p-3 border rounded-md bg-slate-900/50 border-slate-800">
-        <span
-          className={`w-3 h-3 rounded-full ${
-            connStatus === "connected"
-              ? "bg-emerald-500"
-              : connStatus === "connecting"
-                ? "bg-amber-400"
-                : "bg-red-500"
-          }`}
-        />
-        <span className="text-sm text-white">
-          {connStatus === "connected"
-            ? "متصل بخادم الإشارة"
-            : connStatus === "connecting"
-              ? "جارٍ الاتصال بخادم الإشارة…"
-              : "غير متصل بالخادم"}
-        </span>
-        {lastDisconnect && (
-          <span className="ml-auto text-[10px] text-slate-500">
-            آخر انقطاع: {new Date(lastDisconnect).toLocaleTimeString()}
-          </span>
-        )}
-      </div>
-
+      {/* Error */}
       {err && (
         <div className="px-3 py-2 text-xs border rounded bg-red-500/10 text-red-50 border-red-500/40">
           {err}
         </div>
       )}
 
+      {/* Loading */}
       {loading ? (
         <p className="text-xs text-slate-400">جاري التحميل…</p>
-      ) : devices.length === 0 ? (
-        <p className="text-xs text-slate-500">ما في أجهزة متاحة حالياً.</p>
+      ) : !currentUserId ? (
+        <p className="text-xs text-slate-500">
+          فضلاً قم بتسجيل الدخول لعرض قائمة المركبات.
+        </p>
+      ) : vehicles.length === 0 ? (
+        <p className="text-xs text-slate-500">
+          ما في مركبات مسجّلة حالياً. يمكنك إضافة مركبة من خلال لوحة التحكم
+          الخلفية أو API.
+        </p>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {devices.map((dev) => {
-            const same =
-              (typeof dev.userId === "number" &&
-                currentUserId !== null &&
-                dev.userId === currentUserId) ||
-              dev.isMine;
+          {vehicles.map((v) => {
+            const hasCam = hasActiveCameraForOwner(v.ownerUserId);
             return (
               <div
-                key={dev.ownerId}
+                key={v.id}
                 className="p-3 space-y-2 border rounded-lg bg-slate-900/40 border-slate-800"
               >
+                {/* Title and status pills */}
                 <div className="flex items-center justify-between gap-2">
                   <h3 className="text-sm font-semibold text-white">
-                    {dev.label || "كاميرا جهاز"}
+                    {v.name || `مركبة #${v.id}`}
                   </h3>
-                  {dev.onAir ? (
-                    <span className="px-2 py-0.5 text-[10px] rounded bg-emerald-500/20 text-emerald-200">
-                      على الهواء
+                  <div className="flex flex-col items-end gap-1">
+                    <span
+                      className={`px-2 py-0.5 text-[9px] rounded ${
+                        v.isOnline
+                          ? "bg-emerald-500/20 text-emerald-200"
+                          : "bg-slate-800 text-slate-300"
+                      }`}
+                    >
+                      {v.isOnline ? "متصلة" : "غير متصلة"}
                     </span>
-                  ) : (
-                    <span className="px-2 py-0.5 text-[10px] rounded bg-slate-800 text-slate-200">
-                      خاملة
-                    </span>
-                  )}
+                    {hasCam && (
+                      <span className="px-2 py-0.5 text-[9px] rounded bg-red-500/20 text-red-200">
+                        بث كاميرا نشط
+                      </span>
+                    )}
+                  </div>
                 </div>
-                <p className="text-[10px] text-slate-500 break-all">
-                  socket: {dev.ownerId}
-                </p>
-                {typeof dev.userId === "number" && (
-                  <p className="text-[10px] text-slate-500">
-                    userId: {dev.userId}
-                  </p>
-                )}
-                {dev.streamId && (
-                  <p className="text-[10px] text-slate-500">
-                    stream: {dev.streamId}
-                  </p>
-                )}
 
+                {/* API key & metadata */}
+                <p className="text-[10px] text-slate-500 break-all">
+                  API Key: {v.apiKey}
+                </p>
+                {v.lastSeen && (
+                  <p className="text-[9px] text-slate-500">
+                    آخر ظهور:{" "}
+                    {new Date(v.lastSeen).toLocaleString()}
+                  </p>
+                )}
+                <p className="text-[9px] text-slate-600">
+                  أضيفت في:{" "}
+                  {new Date(v.createdAt).toLocaleDateString()}
+                </p>
+
+                {/* Helper action: copy API key */}
                 <button
-                  onClick={() => void handleAttach(dev)}
-                  disabled={busyId === dev.ownerId}
-                  className={`w-full py-1.5 text-xs rounded ${
-                    busyId === dev.ownerId
-                      ? "bg-slate-700 text-slate-200 animate-pulse"
-                      : same
-                        ? "bg-emerald-500/80 text-slate-950"
-                        : "bg-slate-800 text-slate-100 hover:bg-slate-700"
-                  }`}
+                  onClick={() => {
+                    navigator.clipboard
+                      .writeText(v.apiKey)
+                      .catch(() => null);
+                  }}
+                  className="w-full py-1.5 mt-1 text-xs rounded bg-slate-800 text-slate-100 hover:bg-slate-700"
                 >
-                  {busyId === dev.ownerId
-                    ? "يرسل الطلب…"
-                    : same
-                      ? "فتح مباشر (نفس الحساب)"
-                      : "طلب تشغيل الكاميرا"}
+                  نسخ مفتاح المركبة
                 </button>
               </div>
             );

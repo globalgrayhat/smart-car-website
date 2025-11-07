@@ -1,18 +1,20 @@
-// frontend/src/components/admin/IncomingCameraBar.tsx
+/* eslint-disable @typescript-eslint/no-explicit-any */
+/**
+ * IncomingCameraBar
+ *
+ * Displays incoming camera-attach and join requests for the admin/broadcast owner.
+ * - Camera requests: incomingCameraRequests from MediaContext.
+ * - Join requests: incomingJoinRequests from MediaContext.
+ * - Provides accept/reject actions and falls back gracefully if backend fails.
+ */
+
 import React from "react";
 import { useMedia } from "../../media/MediaContext";
 import { api } from "../../services/api";
 
-/**
- * Shows incoming camera / join requests coming from other devices/users.
- * - camera attach: { fromSocketId, fromUserId, fromUsername, reason, at }
- * - join request (socket): stored separately in media ctx
- * Falls back to just clearing if backend didn't accept.
- */
 const IncomingCameraBar: React.FC = () => {
   const media = useMedia() as any;
 
-  // from mediasoup / signal context
   const cameraRequests = media?.incomingCameraRequests ?? [];
   const joinRequests = media?.incomingJoinRequests ?? [];
   const clearCameraReq = media?.clearCameraRequest;
@@ -22,23 +24,16 @@ const IncomingCameraBar: React.FC = () => {
   const total = cameraRequests.length + joinRequests.length;
   if (!total) return null;
 
-  const handleAcceptCamera = async (
-    idx: number,
-    socketId?: string | null,
-  ) => {
-    // 1) try to tell backend to force camera ON for that socket
+  const handleAcceptCamera = async (idx: number, socketId?: string | null) => {
     if (socketId) {
       try {
-        // هذا موجود عندك في Nest -> SignalDevicesController
         await api.post(`/signal/devices/${socketId}/camera/on`);
       } catch {
-        // لو فشل REST نحاول إعلامه عبر السوكت مباشرة (لو السيرفر سامع)
         if (socket) {
           socket.emit("camera:attach-accept", { toSocketId: socketId });
         }
       }
     }
-    // 2) clear from UI
     clearCameraReq?.(idx);
   };
 
@@ -50,8 +45,7 @@ const IncomingCameraBar: React.FC = () => {
   };
 
   const handleApproveJoin = (idx: number) => {
-    // حالياً ما في event رسمي للقبول في gateway
-    // اللي نقدر نسويه هو إزالة الطلب من الواجهة
+    // Currently no direct gateway event; we simply clear from UI.
     clearJoinReq?.(idx);
   };
 
@@ -60,25 +54,25 @@ const IncomingCameraBar: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col gap-2 p-3 mb-4 border rounded-md bg-amber-500/10 border-amber-500/40">
+    <div className="flex flex-col max-w-5xl gap-2 p-3 mx-auto mb-4 border rounded-lg bg-amber-500/5 border-amber-500/40">
       <p className="text-xs font-semibold text-amber-100">
-        عندك {total} طلب{total > 1 ? "ات" : ""} واردة الآن.
+        لديك {total} طلب وارد قيد المعالجة.
       </p>
 
-      {/* camera attach requests */}
+      {/* Camera attach requests */}
       {cameraRequests.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {cameraRequests.map((req: any, idx: number) => (
             <div
               key={`cam-${idx}`}
-              className="flex items-center gap-2 px-3 py-1.5 text-xs rounded bg-slate-950/60 text-slate-50"
+              className="flex flex-wrap items-center gap-2 px-3 py-1.5 text-xs rounded-lg bg-slate-950/80 text-slate-50 border border-slate-800/70"
             >
-              <div>
+              <div className="min-w-[140px]">
                 <p className="text-xs text-white">
-                  {req.fromUsername || "مستخدم مجهول"}
+                  {req.fromUsername || "مستخدم غير معروف"}
                 </p>
                 <p className="text-[10px] text-slate-400">
-                  {req.reason || "طلب تشغيل الكاميرا"}
+                  {req.reason || "طلب تفعيل الكاميرا."}
                 </p>
               </div>
               <div className="flex gap-1">
@@ -104,20 +98,21 @@ const IncomingCameraBar: React.FC = () => {
         </div>
       )}
 
-      {/* join-broadcast / viewer join requests (socket-based) */}
+      {/* Join (viewer/control) requests from socket (ephemeral) */}
       {joinRequests.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {joinRequests.map((req: any, idx: number) => (
             <div
               key={`join-${idx}`}
-              className="flex items-center gap-2 px-3 py-1.5 text-xs rounded bg-slate-950/60 text-slate-50"
+              className="flex flex-wrap items-center gap-2 px-3 py-1.5 text-xs rounded-lg bg-slate-950/80 text-slate-50 border border-slate-800/70"
             >
-              <div>
+              <div className="min-w-[150px]">
                 <p className="text-xs text-white">
-                  {req.fromUsername || "مشاهد"}
+                  {req.fromUsername || `مستخدم #${req.fromUserId || "غير معروف"}`}
                 </p>
                 <p className="text-[10px] text-slate-400">
-                  يبي ينضم للبث {req.message ? `– ${req.message}` : ""}
+                  طلب الانضمام إلى البث
+                  {req.message ? ` – ${req.message}` : "."}
                 </p>
               </div>
               <div className="flex gap-1">

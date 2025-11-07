@@ -1,4 +1,11 @@
-import { Controller, Get, Post, Body, Request, UseGuards } from "@nestjs/common";
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Request,
+  UseGuards,
+} from "@nestjs/common";
 import { VehiclesService } from "./vehicles.service";
 import { JwtAuthGuard } from "../auth/jwt.guard";
 import { RolesGuard } from "../auth/roles.guard";
@@ -16,12 +23,13 @@ export class VehiclesController {
   }
 
   @Post()
-  @Roles(UserRole.ADMIN, UserRole.BROADCAST_MANAGER)
   @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.BROADCAST_MANAGER)
   async create(@Request() req, @Body() body: { name: string }) {
     return this.service.registerVehicle(req.user.userId, body.name);
   }
 
+  // Vehicle heartbeat (no JWT, uses API key)
   @Post("heartbeat")
   async heartbeat(@Body() body: { apiKey: string }) {
     const v = await this.service.heartbeat(body.apiKey);

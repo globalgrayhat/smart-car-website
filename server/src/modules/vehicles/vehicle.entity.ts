@@ -10,12 +10,14 @@ export class Vehicle {
   @PrimaryGeneratedColumn()
   id: number;
 
+  // Owner user (ADMIN or BROADCAST_MANAGER)
   @Column()
   ownerUserId: number;
 
   @Column()
   name: string;
 
+  // API key used by the vehicle to authenticate WebRTC/broadcast
   @Column({ unique: true })
   apiKey: string;
 

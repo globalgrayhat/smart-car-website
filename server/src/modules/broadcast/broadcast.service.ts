@@ -1,10 +1,11 @@
+// server/src/modules/broadcast/broadcast.service.ts
 import {
   Injectable,
   ForbiddenException,
   NotFoundException,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { In, Repository } from "typeorm";
+import { Repository } from "typeorm";
 import {
   BroadcastSession,
   BroadcastSessionStatus,
@@ -13,20 +14,16 @@ import {
   BroadcastSource,
   BroadcastSourceType,
 } from "./entities/broadcast-source.entity";
-import {
-  BroadcastInvite,
-  InviteStatus,
-} from "./entities/broadcast-invite.entity";
-import { JoinRequestsService } from "../join-requests/join-requests.service";
 
-/**
- * BroadcastService
- * - owns sessions per user
- * - owns sources per session
- * - can reflect mediasoup producers → DB
- * - can reflect raw socket signals (stream:start / stop) → DB
- * - provides list APIs for REST layer (/broadcast/sources, /broadcast/all-sources)
- */
+function mergeMeta(existing: string | null, extra: any): string {
+  try {
+    const base = existing ? JSON.parse(existing) : {};
+    return JSON.stringify({ ...base, ...extra });
+  } catch {
+    return JSON.stringify(extra);
+  }
+}
+
 @Injectable()
 export class BroadcastService {
   constructor(
@@ -34,18 +31,13 @@ export class BroadcastService {
     private readonly sessionsRepo: Repository<BroadcastSession>,
     @InjectRepository(BroadcastSource)
     private readonly sourcesRepo: Repository<BroadcastSource>,
-    @InjectRepository(BroadcastInvite)
-    private readonly invitesRepo: Repository<BroadcastInvite>,
-    private readonly joinReq: JoinRequestsService,
   ) {}
 
-  /**
-   * get or create default session PER USER
-   */
   async getOrCreateDefaultSession(userId: number) {
     let sess = await this.sessionsRepo.findOne({
       where: { ownerUserId: userId, status: BroadcastSessionStatus.ACTIVE },
     });
+
     if (!sess) {
       sess = this.sessionsRepo.create({
         ownerUserId: userId,
@@ -53,12 +45,10 @@ export class BroadcastService {
       });
       sess = await this.sessionsRepo.save(sess);
     }
+
     return sess;
   }
 
-  /**
-   * OLD → list sources of current user (for his dashboard)
-   */
   async listSources(userId: number) {
     const sess = await this.getOrCreateDefaultSession(userId);
     return this.sourcesRepo.find({
@@ -67,10 +57,7 @@ export class BroadcastService {
     });
   }
 
-  /**
-   * NEW → list all on-air sources for all users
-   * frontend expects key = ownerId → we alias it here.
-   */
+  // ✅ هذا هو المصدر الذي يستهلكه الفرونت: BroadcastSources
   async listAllOnAirSources() {
     const list = await this.sourcesRepo.find({
       where: { isOnAir: true },
@@ -81,23 +68,17 @@ export class BroadcastService {
     return list.map((s) => ({
       id: s.id,
       title: s.name,
-      kind: s.type,
+      kind: s.type, // SCREEN | HOST_CAMERA | CAR_CAMERA | GUEST_CAMERA
       onAir: s.isOnAir,
       externalId: s.externalId,
-      ownerId: s.session?.ownerUserId ?? null, // 👈 frontend wants ownerId
-      ownerUserId: s.session?.ownerUserId ?? null,
+      ownerUserId: s.session ? s.session.ownerUserId : null,
       ownerSocketId: s.ownerSocketId,
+      meta: s.meta ? safeParseJson(s.meta) : null,
     }));
   }
 
-  // ---------------------------------------------------------------------------
-  // from MEDIASOUP (produce)
-  // ---------------------------------------------------------------------------
+  // ------- Mediasoup integration: upsert by producer --------
 
-  /**
-   * Called by MediasoupService when a producer is created/updated
-   * payload.onAir must be respected → mediasoup producers are usually onAir=true
-   */
   async upsertFromMediasoup(payload: {
     producerId: string;
     userId: number | null;
@@ -114,9 +95,7 @@ export class BroadcastService {
         ? BroadcastSourceType.SCREEN
         : payload.kind === "video" || payload.kind === "camera"
           ? BroadcastSourceType.HOST_CAMERA
-          : payload.kind === "custom"
-            ? BroadcastSourceType.GUEST_CAMERA
-            : BroadcastSourceType.GUEST_CAMERA;
+          : BroadcastSourceType.GUEST_CAMERA;
 
     let src = await this.sourcesRepo.findOne({
       where: { externalId: payload.producerId },
@@ -141,16 +120,8 @@ export class BroadcastService {
     return this.sourcesRepo.save(src);
   }
 
-  // ---------------------------------------------------------------------------
-  // from SOCKET-ONLY (stream:start / stream:stop)
-  // frontend uses this when user shares screen via getDisplayMedia
-  // or when we want REST to see it even if it wasn't a mediasoup producer.
-  // ---------------------------------------------------------------------------
+  // ------- Socket-based screen/camera placeholders ----------
 
-  /**
-   * Upsert source based on raw socket signal.
-   * Used by MediasoupGateway.onStreamStart / onStreamBroadcastStart
-   */
   async upsertFromSocketStream(payload: {
     userId: number | null;
     socketId: string;
@@ -163,12 +134,11 @@ export class BroadcastService {
     const ownerUserId = payload.userId ?? 1;
     const session = await this.getOrCreateDefaultSession(ownerUserId);
 
-    const mappedType: BroadcastSourceType =
+    const mappedType =
       payload.kind === "screen"
         ? BroadcastSourceType.SCREEN
         : BroadcastSourceType.HOST_CAMERA;
 
-    // we try to match either by externalId (streamId) or by socket-owner-session
     let src: BroadcastSource | null = null;
 
     if (payload.streamId) {
@@ -178,7 +148,6 @@ export class BroadcastService {
     }
 
     if (!src) {
-      // fallback: same session + same socket + same type
       src = await this.sourcesRepo.findOne({
         where: {
           sessionId: session.id,
@@ -196,31 +165,26 @@ export class BroadcastService {
         externalId: payload.streamId ?? null,
         ownerSocketId: payload.socketId,
         isOnAir: payload.onAir ?? true,
-        meta: {
+        meta: JSON.stringify({
           channelId: payload.channelId,
           via: "SOCKET",
-        },
+        }),
       });
     } else {
       src.isOnAir = payload.onAir ?? true;
       src.ownerSocketId = payload.socketId;
       src.externalId = payload.streamId ?? src.externalId;
       src.name = payload.name || src.name;
-      src.meta = {
-        ...(src.meta || {}),
+      src.meta = mergeMeta(src.meta, {
         channelId: payload.channelId,
         via: "SOCKET",
-      };
+      });
     }
 
     return this.sourcesRepo.save(src);
   }
 
-  /**
-   * stop a source that was created via socket (or mediasoup) for a given socket
-   */
   async stopSocketStream(socketId: string, streamId: string | null = null) {
-    // 1) by streamId
     if (streamId) {
       const s = await this.sourcesRepo.findOne({
         where: { externalId: streamId },
@@ -231,14 +195,15 @@ export class BroadcastService {
       }
     }
 
-    // 2) generic: all sources for that socket → off
     const list = await this.sourcesRepo.find({
       where: { ownerSocketId: socketId },
     });
+
     for (const s of list) {
       s.isOnAir = false;
       await this.sourcesRepo.save(s);
     }
+
     return { ok: true };
   }
 
@@ -249,98 +214,26 @@ export class BroadcastService {
     return { ok: true };
   }
 
-  /**
-   * owner turn source on/off (REST)
-   */
   async setOnAir(userId: number, sourceId: number, isOnAir: boolean) {
     const src = await this.sourcesRepo.findOne({
       where: { id: sourceId },
       relations: ["session"],
     });
+
     if (!src) throw new NotFoundException("Source not found");
     if (src.session.ownerUserId !== userId) {
       throw new ForbiddenException("Not your session");
     }
+
     src.isOnAir = isOnAir;
     return this.sourcesRepo.save(src);
   }
+}
 
-  /**
-   * admin → send invite to another user to join session
-   */
-  async createInvite(
-    sessionId: number,
-    fromUserId: number,
-    toUserId: number,
-  ) {
-    const inv = this.invitesRepo.create({
-      sessionId,
-      fromUserId,
-      toUserId,
-      token: Math.random().toString(36).slice(2),
-      status: InviteStatus.PENDING,
-      expiresAt: new Date(Date.now() + 30 * 60 * 1000),
-    });
-    return this.invitesRepo.save(inv);
-  }
-
-  /**
-   * legacy helper → list all CAMERA-ish sources
-   */
-  async listAllCameraSources() {
-    const cameras = await this.sourcesRepo.find({
-      where: {
-        type: In([
-          BroadcastSourceType.HOST_CAMERA,
-          BroadcastSourceType.CAR_CAMERA,
-          BroadcastSourceType.GUEST_CAMERA,
-        ]),
-      },
-      relations: ["session"],
-      order: { id: "ASC" },
-    });
-
-    return cameras.map((c) => ({
-      ownerId: c.ownerSocketId,
-      userId: c.session?.ownerUserId ?? null,
-      label: c.name,
-      streamId: c.externalId,
-      onAir: c.isOnAir,
-    }));
-  }
-
-  // ---------------------------------------------------------------------------
-  // JOIN REQUESTS (VIEW / CAMERA / ROLE_UPGRADE)
-  // ---------------------------------------------------------------------------
-
-  async requestView(fromUserId: number, toUserId: number, msg?: string) {
-    return this.joinReq.create(
-      fromUserId,
-      toUserId,
-      msg ?? "REQUEST_VIEW",
-      "VIEW",
-    );
-  }
-
-  async requestCamera(fromUserId: number, toUserId: number, msg?: string) {
-    return this.joinReq.create(
-      fromUserId,
-      toUserId,
-      msg ?? "REQUEST_CAMERA",
-      "CAMERA",
-    );
-  }
-
-  async requestRoleUpgrade(
-    fromUserId: number,
-    toUserId: number,
-    msg?: string,
-  ) {
-    return this.joinReq.create(
-      fromUserId,
-      toUserId,
-      msg ?? "REQUEST_ROLE_UPGRADE",
-      "ROLE_UPGRADE",
-    );
+function safeParseJson(value: string): any {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
   }
 }

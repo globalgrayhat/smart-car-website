@@ -1,12 +1,11 @@
-import { Module } from "@nestjs/common";
-import { TypeOrmModule } from "@nestjs/typeorm";
-import { JoinRequest } from "./join-request.entity";
-import { JoinRequestsService } from "./join-requests.service";
-import { JoinRequestsController } from "./join-requests.controller";
-import { UsersModule } from "../users/users.module";
+import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { JoinRequest } from './join-request.entity';
+import { JoinRequestsService } from './join-requests.service';
+import { JoinRequestsController } from './join-requests.controller';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([JoinRequest]), UsersModule],
+  imports: [TypeOrmModule.forFeature([JoinRequest])],
   providers: [JoinRequestsService],
   controllers: [JoinRequestsController],
   exports: [JoinRequestsService],

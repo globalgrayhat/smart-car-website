@@ -1,25 +1,15 @@
-import {
-  IsInt,
-  IsOptional,
-  IsString,
-  Min,
-  IsIn,
-} from "class-validator";
+// server/src/modules/join-requests/dto/create-join-request.dto.ts
+import { IsEnum, IsInt, IsOptional, IsString } from 'class-validator';
+import { JoinRequestIntent } from '../join-request.entity';
 
 export class CreateJoinRequestDto {
   @IsInt()
-  @Min(1)
   toUserId: number;
+
+  @IsEnum(JoinRequestIntent)
+  intent: JoinRequestIntent;
 
   @IsOptional()
   @IsString()
   message?: string;
-
-  // VIEW → طلب مشاهدة
-  // CAMERA → يبي يفتح كاميرته
-  // ROLE_UPGRADE → يبي يترقّى
-  @IsOptional()
-  @IsString()
-  @IsIn(["VIEW", "CAMERA", "ROLE_UPGRADE"])
-  intent?: "VIEW" | "CAMERA" | "ROLE_UPGRADE";
 }

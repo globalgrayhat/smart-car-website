@@ -1,5 +1,8 @@
-// src/auth/AuthContext.tsx
-import React, {
+// client/src/auth/AuthContext.tsx
+// Auth state provider: user + token + login/logout.
+
+import React,
+{
   createContext,
   useContext,
   useEffect,
@@ -30,45 +33,50 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // load from storage
   useEffect(() => {
     const token = localStorage.getItem("token");
-    const userRaw = localStorage.getItem("user");
-    if (token && userRaw) {
+    const stored = localStorage.getItem("user");
+
+    if (token && stored) {
       setApiToken(token);
       try {
-        setUser(JSON.parse(userRaw));
+        setUser(JSON.parse(stored));
       } catch {
         setUser(null);
       }
     }
+
     setLoading(false);
 
-    // لو أي ريكوست عطانا 401 من api.ts
-    const handler = () => {
+    const onUnauthorized = () => {
       setApiToken(null);
       setUser(null);
+      localStorage.removeItem("token");
+      localStorage.removeItem("user");
     };
-    window.addEventListener("app:unauthorized", handler);
-    return () => window.removeEventListener("app:unauthorized", handler);
+
+    window.addEventListener("app:unauthorized", onUnauthorized);
+    return () =>
+      window.removeEventListener("app:unauthorized", onUnauthorized);
   }, []);
 
   const login = async (email: string, password: string) => {
-    // POST /api/auth/login
     const res = await api.post<{
       access_token: string;
       user: User;
-    }>("/api/auth/login", { email, password });
+    }>("/auth/login", { email, password });
 
-    // نحفظ التوكن
     setApiToken(res.access_token);
     setUser(res.user);
+    localStorage.setItem("token", res.access_token);
     localStorage.setItem("user", JSON.stringify(res.user));
   };
 
   const logout = () => {
     setApiToken(null);
     setUser(null);
+    localStorage.removeItem("token");
+    localStorage.removeItem("user");
   };
 
   return (

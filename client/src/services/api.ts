@@ -1,24 +1,10 @@
-// frontend/src/services/api.ts
-// Unified API client for the whole frontend.
-// - Reads base URL from Vite envs
-// - Attaches bearer token if present
-// - Emits a global "app:unauthorized" event on 401
-// - Exposes get/post/put/delete helpers with typed responses
+// src/services/api.ts
+// Tiny fetch wrapper with base URL from env + token handling + 401 broadcast
 
-const API_BASE =
-  (import.meta.env.VITE_API_BASE_URL &&
-    import.meta.env.VITE_API_BASE_URL.replace(/\/+$/, "")) ||
-  "http://localhost:3000";
+let AUTH_TOKEN: string | null = localStorage.getItem("token") || null;
 
-let currentToken: string | null =
-  localStorage.getItem("token") || localStorage.getItem("access_token") || null;
-
-/**
- * Set / clear the current API token.
- * Call this after login / logout.
- */
 export function setApiToken(token: string | null) {
-  currentToken = token;
+  AUTH_TOKEN = token;
   if (token) {
     localStorage.setItem("token", token);
   } else {
@@ -26,51 +12,66 @@ export function setApiToken(token: string | null) {
   }
 }
 
-/**
- * Internal request helper.
- */
-async function request<T>(
-  method: "GET" | "POST" | "PUT" | "DELETE",
+// Normalize base: ensures trailing /api is present once
+function getBase() {
+  const raw = import.meta.env.VITE_API_BASE || "http://localhost:3000/api";
+  return raw.replace(/\/+$/, ""); // strip trailing slash
+}
+
+type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+
+async function request<T = any>(
   path: string,
+  method: HttpMethod,
   body?: unknown,
+  extraHeaders?: Record<string, string>,
 ): Promise<T> {
-  const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
+  const base = getBase(); // e.g. http://host:3000/api
+  // Accept both absolute and relative paths; if relative, prefix with base
+  const url = /^https?:\/\//i.test(path) ? path : `${base}${path.startsWith("/") ? "" : "/"}${path}`;
+
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    ...(extraHeaders || {}),
   };
-  if (currentToken) {
-    headers.Authorization = `Bearer ${currentToken}`;
-  }
+  if (AUTH_TOKEN) headers.Authorization = `Bearer ${AUTH_TOKEN}`;
 
   const res = await fetch(url, {
     method,
     headers,
-    body: body ? JSON.stringify(body) : undefined,
+    body: body != null ? JSON.stringify(body) : undefined,
+    credentials: "include",
   });
 
-  // common 401 handling across the whole frontend
+  // 204 No Content
+  if (res.status === 204) return undefined as T;
+
+  // Unauthorized → tell app
   if (res.status === 401) {
-    // tell AuthContext to logout
-    window.dispatchEvent(new CustomEvent("app:unauthorized"));
+    window.dispatchEvent(new Event("app:unauthorized"));
     throw new Error("Unauthorized");
   }
 
-  // try to parse json, but keep it safe
+  let data: any = null;
   const text = await res.text();
-  const data = text ? (JSON.parse(text) as T) : ({} as T);
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = text;
+  }
 
   if (!res.ok) {
-    const msg =
-      (data as any)?.message || (data as any)?.error || "Request failed";
+    const msg = (data && (data.message || data.error)) || `HTTP ${res.status}`;
     throw new Error(msg);
   }
 
-  return data;
+  return data as T;
 }
 
 export const api = {
-  get: <T = any>(path: string) => request<T>("GET", path),
-  post: <T = any>(path: string, body?: unknown) => request<T>("POST", path, body),
-  put: <T = any>(path: string, body?: unknown) => request<T>("PUT", path, body),
-  delete: <T = any>(path: string) => request<T>("DELETE", path),
+  get: <T = any>(path: string) => request<T>(path, "GET"),
+  post: <T = any>(path: string, body?: unknown) => request<T>(path, "POST", body),
+  put:  <T = any>(path: string, body?: unknown) => request<T>(path, "PUT", body),
+  patch:<T = any>(path: string, body?: unknown) => request<T>(path, "PATCH", body),
+  del:  <T = any>(path: string) => request<T>(path, "DELETE"),
 };

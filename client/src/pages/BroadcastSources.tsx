@@ -1,490 +1,564 @@
+// client/src/pages/BroadcastSources.tsx
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /**
- * BroadcastSources — real-time join status + per-intent states + no duplicates
- * - Per-intent join state (VIEW/CAMERA/SCREEN/ROLE_UPGRADE)
- * - Socket push: "join-requests:status" → instant UI unlock without refresh
- * - After VIEW approved: allowViewNow=true, refresh producers, quality picker visible
- * - Dedupe: don't render the primary video again in the grid list
- * - Publisher: after approve/reject via REST, emit "join:notify" to push UI instantly
+ * BroadcastSources
+ *
+ * مركز موحّد لإدارة البث المباشر:
+ * - عرض جميع البثوث النشطة من /broadcast/public.
+ * - تجربة مشاهدة واحدة مدمجة (فيديو رئيسي).
+ * - المالك / الأدمن يقدر يبث مباشرة من نفس الواجهة.
+ * - المشاهد يقدر يرسل طلب مشاهدة / تحكم ويتم التحديث آني عبر WebSocket.
  */
-import { useEffect, useMemo, useState, useRef, useCallback } from "react";
+
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useAuth } from "../auth/AuthContext";
 import { canPublish, isViewer } from "../auth/roles";
 import { api } from "../services/api";
 import { useMedia } from "../media/MediaContext";
 import { LiveTile } from "../components/LiveTile";
 
-const OWNER_FALLBACK = Number(import.meta.env.VITE_OWNER_USER_ID || "1");
-
+type Intent = "VIEW" | "CONTROL";
 type JoinState = "idle" | "pending" | "approved" | "rejected";
-type Intent = "VIEW" | "CAMERA" | "SCREEN" | "ROLE_UPGRADE";
-
-type JoinResp = {
-  id?: number | string;
-  status: "PENDING" | "APPROVED" | "REJECTED" | null;
-  intent?: Intent | null;
-  grantedRole?: string | null;
-} | null;
-
-type PerIntentStates = Partial<Record<Intent, JoinState>> & {
-  /** Keep last raw resp if backend only returns the latest request */
-  __last?: JoinResp;
-};
 
 type BroadcastSource = {
-  id: string | number;
+  id: number;
   title?: string | null;
-  kind?: string | null; // "camera" | "screen" | "custom"
-  ownerId?: number | null;
-  ownerUserId?: number | null;
+  kind?: string | null;
+  onAir?: boolean;
   externalId?: string | null;
+  ownerUserId?: number | null;
+  ownerName?: string | null;
 };
 
 type JoinRequestItem = {
-  id: string | number;
-  fromUserId: number | string;
-  toUserId?: number | string;
-  status?: "PENDING" | "APPROVED" | "REJECTED" | null;
-  intent?: Intent | null;
+  id: number;
+  fromUserId: number;
+  intent: Intent;
+  status: "PENDING" | "APPROVED" | "REJECTED";
   message?: string | null;
-  createdAt?: string | null;
+  broadcastId?: number | null;
 };
 
-const getUserId = (u: unknown): number | null => {
-  if (!u) return null;
-  const anyUser = u as { id?: number; userId?: number };
-  return typeof anyUser.userId === "number"
-    ? anyUser.userId
-    : typeof anyUser.id === "number"
-    ? anyUser.id
-    : null;
+const getUserId = (u: any): number | null =>
+  u && (typeof u.userId === "number"
+    ? u.userId
+    : typeof u.id === "number"
+    ? u.id
+    : null);
+
+const labelForKind = (kind?: string | null) => {
+  const k = (kind || "").toUpperCase();
+  if (k === "SCREEN") return "مشاركة شاشة";
+  if (k === "CAR_CAMERA") return "كاميرا مركبة";
+  if (k === "HOST_CAMERA") return "كاميرا المضيف";
+  if (k === "GUEST_CAMERA") return "كاميرا ضيف";
+  return "بث مباشر";
 };
 
-const toJoinState = (st: string | null | undefined): JoinState => {
-  if (st === "APPROVED") return "approved";
-  if (st === "REJECTED") return "rejected";
-  if (st === "PENDING") return "pending";
-  return "idle";
-};
-
-export default function BroadcastSources() {
+const BroadcastSources: React.FC = () => {
   const { user } = useAuth();
   const media = useMedia() as any;
 
-  const socket = media?.socket ?? null;
-  const currentUserId = getUserId(user);
+  const socket: any = media?.socket ?? null;
+  const userId = getUserId(user);
+
   const viewerOnly = isViewer(user?.role);
-  const publisher = canPublish(user?.role);
+  const publisherRole = canPublish(user?.role);
 
-  // mediasoup status / remotes
-  const remotes: any[] = Array.isArray(media?.remotes) ? media.remotes : [];
-  const mediaStatus: "connected" | "disconnected" | "connecting" =
-    (media?.status as any) ?? media?.connStatus ?? "disconnected";
+  // حالة اتصال ميديا (للتناسق مع باقي الصفحات)
+  const mediaStatus: "connected" | "connecting" | "disconnected" =
+    media?.connStatus ?? media?.status ?? "disconnected";
+
+  // قائمة الـ remotes من MediaContext
+  const remotes: any[] = Array.isArray(media?.remotes)
+    ? media.remotes
+    : [];
+
+  // نختار أول فيديو كتيار رئيسي
   const videoRemotes = remotes.filter((r) => r.kind === "video");
-  const hasVideoRemotes = videoRemotes.length > 0;
-  const primaryRemote = videoRemotes[0] || null;
+  const primary = videoRemotes[0] || null;
 
-  // local preview fallback
-  const localPreviewRef = useRef<HTMLVideoElement | null>(null);
-  useEffect(() => {
-    if (!localPreviewRef.current) return;
-    const localStream =
-      media?.localCameraStream ||
-      media?.localStream ||
-      media?.cameraStream ||
-      media?.previewStream;
-    if (localStream && localPreviewRef.current.srcObject !== localStream) {
-      localPreviewRef.current.srcObject = localStream;
-    }
-  }, [media]);
-
-  // ui state
+  // بيانات /broadcast/public
   const [broadcasts, setBroadcasts] = useState<BroadcastSource[]>([]);
-  const [selectedBroadcastId, setSelectedBroadcastId] = useState<string | number | null>(null);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
 
-  /** per-owner per-intent states: { [ownerId]: { VIEW, CAMERA, SCREEN, ROLE_UPGRADE, __last } } */
-  const [joinMap, setJoinMap] = useState<Record<string, PerIntentStates>>({});
-  const [pendingRequests, setPendingRequests] = useState<JoinRequestItem[]>([]);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [waitingStale, setWaitingStale] = useState(false);
-  const [isStartingLocal, setIsStartingLocal] = useState(false);
+  // حالات طلبات الانضمام (للمستخدم الحالي)
+  const [joinStateView, setJoinStateView] =
+    useState<JoinState>("idle");
+  const [joinStateControl, setJoinStateControl] =
+    useState<JoinState>("idle");
 
-  // Quality picker
-  const [quality, setQuality] = useState<"Auto" | "144p" | "360p" | "720p+">("Auto");
-  useEffect(() => {
-    const map: Record<typeof quality, 0 | 1 | 2 | null> = {
-      Auto: null,
-      "144p": 0,
-      "360p": 1,
-      "720p+": 2,
-    };
-    media?.setPreferredQuality?.(map[quality]);
-  }, [quality, media]);
+  // طلبات معلّقة للمالك / الأدمن
+  const [pending, setPending] = useState<JoinRequestItem[]>([]);
 
-  // -------------------------- API --------------------------
-  const fetchBroadcasts = useCallback(async () => {
-    try {
-      const res = (await api.get(`/api/broadcast/all-sources`)) as any[];
-      const raw = Array.isArray(res) ? res : [];
+  // أخطاء عامة
+  const [error, setError] = useState<string | null>(null);
 
-      // Drop audio + dedupe per (owner, kind)
-      const seen = new Set<string>();
-      const clean = raw
-        .filter((x) => String(x.kind || "").toLowerCase() !== "audio")
-        .filter((x) => {
-          const owner = x.ownerUserId || x.ownerId || OWNER_FALLBACK;
-          const kind = String(x.kind || "").toLowerCase();
-          const key = `${owner}::${kind}`;
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        });
+  // حالة تشغيل كاميرا محلية (للمذيع)
+  const [isStartingCam, setIsStartingCam] = useState(false);
 
-      setBroadcasts(clean);
-      setErrorMsg(null);
-      if (!selectedBroadcastId && clean.length > 0) {
-        setSelectedBroadcastId(clean[0].id);
-      }
-    } catch {
-      setBroadcasts([]);
-      setErrorMsg("تعذّر تحميل قائمة البثوث.");
-    }
-  }, [selectedBroadcastId]);
+  // انتظار ظهور تيار الفيديو بعد السماح بالمشاهدة
+  const [waitingVideo, setWaitingVideo] = useState(false);
 
-  const markIntentState = useCallback(
-    (ownerId: number, intent: Intent, state: JoinState, last?: JoinResp) => {
-      setJoinMap((prev) => {
-        const key = String(ownerId);
-        const old = prev[key] || {};
-        const next: PerIntentStates = { ...old, [intent]: state };
-        if (last !== undefined) next.__last = last;
-        return { ...prev, [key]: next };
-      });
-    },
-    [],
-  );
+  // لمعاينة الكاميرا المحلية (لو احتجنا)
+  const localPreviewRef =
+    useRef<HTMLVideoElement | null>(null);
 
-  const fetchJoinForOwner = useCallback(async (ownerId: number) => {
-    try {
-      const last = (await api.get(`/api/join-requests/last/${ownerId}`)) as JoinResp;
-      if (last?.intent) {
-        markIntentState(ownerId, last.intent, toJoinState(last.status ?? null), last);
-      } else {
-        // Unknown intent → treat as idle
-        markIntentState(ownerId, "VIEW", "idle", last);
-      }
-    } catch {
-      // ignore
-    }
-  }, [markIntentState]);
-
-  const fetchPendingRequests = useCallback(async () => {
-    if (!publisher) return;
-    try {
-      const res = (await api.get(`/api/join-requests/my`)) as any[];
-      const list = Array.isArray(res) ? res : [];
-      setPendingRequests(list.filter((r) => r.status === "PENDING"));
-    } catch {
-      setPendingRequests([]);
-    }
-  }, [publisher]);
-
-  // init + polling
-  useEffect(() => {
-    void fetchBroadcasts();
-    void fetchPendingRequests();
-  }, [fetchBroadcasts, fetchPendingRequests]);
-
-  useEffect(() => {
-    if (!publisher) return;
-    const id = setInterval(() => {
-      void fetchBroadcasts();
-      void fetchPendingRequests();
-    }, 5000);
-    return () => clearInterval(id);
-  }, [publisher, fetchBroadcasts, fetchPendingRequests]);
-
-  // selection → fetch last join for owner
-  useEffect(() => {
-    if (!selectedBroadcastId) return;
-    const b = broadcasts.find((x) => String(x.id) === String(selectedBroadcastId));
-    const ownerId = b?.ownerUserId || b?.ownerId || OWNER_FALLBACK;
-    if (ownerId) void fetchJoinForOwner(ownerId);
-  }, [selectedBroadcastId, broadcasts, fetchJoinForOwner]);
-
-  // derived
-  const currentBroadcast = useMemo(
-    () => (selectedBroadcastId ? broadcasts.find((b) => String(b.id) === String(selectedBroadcastId)) ?? null : null),
-    [selectedBroadcastId, broadcasts],
+  /**
+   * البث الحالي المختار
+   */
+  const currentBroadcast: BroadcastSource | null = useMemo(
+    () =>
+      selectedId != null
+        ? broadcasts.find((b) => b.id === selectedId) || null
+        : broadcasts[0] || null,
+    [broadcasts, selectedId],
   );
 
   const currentOwnerId =
-    currentBroadcast?.ownerUserId || currentBroadcast?.ownerId || OWNER_FALLBACK;
+    currentBroadcast?.ownerUserId ?? null;
 
-  const ownerKey = String(currentOwnerId || OWNER_FALLBACK);
-  const perIntent = joinMap[ownerKey] || {};
-  const viewState: JoinState = perIntent.VIEW || "idle";
+  const isOwner =
+    !!userId &&
+    !!currentOwnerId &&
+    Number(userId) === Number(currentOwnerId);
 
-  const isSelfOwner =
-    currentOwnerId && currentUserId && Number(currentOwnerId) === Number(currentUserId);
+  // من يقدر يشوف بدون إذن؟
+  const canAlwaysView =
+    !!userId && (publisherRole || isOwner);
 
-  // strict gating for pure viewers until VIEW approved (unless self/publisher)
-  const viewRequiresApproval = viewerOnly && !isSelfOwner && !publisher;
-  const allowViewNow =
-    !viewRequiresApproval || viewState === "approved" || hasVideoRemotes;
+  // السماح الفعلي بالمشاهدة
+  const allowView =
+    canAlwaysView || joinStateView === "approved";
 
-  // Tell MediaContext to gate consumption
-  useEffect(() => {
-    media?.setViewingAllowed?.(!!allowViewNow);
-  }, [media, allowViewNow]);
-
-  // Can publish if approved for CAMERA/SCREEN/ROLE_UPGRADE
+  // من يقدر يتحكم / يبث فعلياً؟
   const canPublishNow =
-    isSelfOwner ||
-    publisher ||
-    (perIntent.CAMERA === "approved" || perIntent.SCREEN === "approved" || perIntent.ROLE_UPGRADE === "approved");
+    canAlwaysView || joinStateControl === "approved";
 
-  // Wait logic if backend lists broadcasts but no video yet
-  const shouldWaitForVideo =
-    allowViewNow && !hasVideoRemotes && mediaStatus === "connected" && broadcasts.length > 0;
+  /**
+   * تحميل قائمة البثوث النشطة
+   */
+  const loadBroadcasts = useCallback(async () => {
+    try {
+      const res = await api.get("/broadcast/public");
+      const list: any[] = Array.isArray(res) ? res : [];
 
-  useEffect(() => {
-    if (!shouldWaitForVideo) {
-      setWaitingStale(false);
-      return;
+      const clean: BroadcastSource[] = list
+        .filter(
+          (x) =>
+            x &&
+            x.onAir &&
+            String(x.kind || "").toUpperCase() !== "AUDIO",
+        )
+        .map((x) => ({
+          id: Number(x.id),
+          title: x.title || null,
+          kind: x.kind || null,
+          onAir: !!x.onAir,
+          externalId: x.externalId || null,
+          ownerUserId:
+            typeof x.ownerUserId === "number"
+              ? x.ownerUserId
+              : typeof x.ownerId === "number"
+              ? x.ownerId
+              : null,
+          ownerName: x.ownerName || null,
+        }));
+
+      setBroadcasts(clean);
+      if (!selectedId && clean[0]) {
+        setSelectedId(clean[0].id);
+      }
+      setError(null);
+    } catch (e: any) {
+      setBroadcasts([]);
+      setError(e?.message || "تعذّر تحميل قائمة البثوث.");
     }
-    if (typeof media?.refreshProducers === "function") {
-      void media.refreshProducers();
+  }, [selectedId]);
+
+  /**
+   * تحميل طلبات الانضمام الموجهة لي (للمذيع/الأدمن)
+   */
+  const loadMyPending = useCallback(async () => {
+    if (!publisherRole) return;
+    try {
+      const res = await api.get("/join-requests/my");
+      const list: any[] = Array.isArray(res) ? res : [];
+      setPending(
+        list.filter(
+          (r) =>
+            r &&
+            r.status === "PENDING" &&
+            r.intent &&
+            r.id,
+        ),
+      );
+    } catch {
+      setPending([]);
     }
-    const t = setTimeout(() => {
-      if (!hasVideoRemotes) setWaitingStale(true);
-    }, 7000);
-    return () => clearTimeout(t);
-  }, [shouldWaitForVideo, media, hasVideoRemotes]);
+  }, [publisherRole]);
 
-  // ---------------------- socket: live join status ----------------------
+  /**
+   * تحميل آخر حالة طلب بين المستخدم الحالي ومالك البث
+   */
+  const loadLastJoin = useCallback(
+    async (ownerId?: number | null) => {
+      if (!ownerId || !userId) return;
+      if (Number(ownerId) === Number(userId)) return;
+
+      try {
+        const res: any = await api.get(
+          `/join-requests/last/${ownerId}`,
+        );
+
+        if (!res || res.status === "NONE") {
+          setJoinStateView("idle");
+          setJoinStateControl("idle");
+          return;
+        }
+
+        const st: JoinState =
+          res.status === "APPROVED"
+            ? "approved"
+            : res.status === "REJECTED"
+            ? "rejected"
+            : "pending";
+
+        if (res.intent === "VIEW") {
+          setJoinStateView(st);
+        }
+        if (res.intent === "CONTROL") {
+          setJoinStateControl(st);
+        }
+      } catch {
+        // نتجاهل خطأ الاستعلام هنا
+      }
+    },
+    [userId],
+  );
+
+  /**
+   * تحميل مبدئي
+   */
   useEffect(() => {
-    if (!socket || !currentUserId) return;
+    void loadBroadcasts();
+    void loadMyPending();
+  }, [loadBroadcasts, loadMyPending]);
 
-    const onJoinStatus = async (payload: {
+  /**
+   * تحديث دوري خفيف للناشر/الأدمن لمزامنة القائمة والطلبات
+   */
+  useEffect(() => {
+    if (!publisherRole) return;
+    const id = setInterval(() => {
+      void loadBroadcasts();
+      void loadMyPending();
+    }, 5000);
+    return () => clearInterval(id);
+  }, [publisherRole, loadBroadcasts, loadMyPending]);
+
+  /**
+   * عند تغيير البث الحالي، نحدّث حالة الطلبات بيني وبينه
+   */
+  useEffect(() => {
+    if (!currentBroadcast) return;
+    void loadLastJoin(currentBroadcast.ownerUserId);
+  }, [
+    currentBroadcast?.id,
+    currentBroadcast?.ownerUserId,
+    loadLastJoin,
+  ]);
+
+  /**
+   * استقبال تحديثات حالة الطلبات عبر WebSocket
+   */
+  useEffect(() => {
+    if (!socket || !userId) return;
+
+    const handler = (p: {
       toUserId: number;
       status: "APPROVED" | "REJECTED";
       intent: Intent;
-      requestId?: string | number | null;
     }) => {
-      // Only care if it's for me
-      if (Number(payload.toUserId) !== Number(currentUserId)) return;
+      if (Number(p.toUserId) !== Number(userId)) return;
 
-      // Update local per-intent state
-      const st = payload.status === "APPROVED" ? "approved" : "rejected";
-      if (currentOwnerId) {
-        markIntentState(currentOwnerId, payload.intent, st);
-      }
+      const st: JoinState =
+        p.status === "APPROVED"
+          ? "approved"
+          : "rejected";
 
-      // If VIEW approved → unlock immediately and refresh producers
-      if (payload.intent === "VIEW" && payload.status === "APPROVED") {
-        media?.setViewingAllowed?.(true);
-        // Pull producers to start consumption instantly
-        if (typeof media?.refreshProducers === "function") {
-          await media.refreshProducers();
+      if (p.intent === "VIEW") {
+        setJoinStateView(st);
+        if (p.status === "APPROVED") {
+          media?.setViewingAllowed?.(true);
+          media?.refreshProducers?.();
         }
       }
+
+      if (p.intent === "CONTROL") {
+        setJoinStateControl(st);
+      }
     };
 
-    socket.on("join-requests:status", onJoinStatus);
+    socket.on("join-requests:status", handler);
     return () => {
-      socket.off("join-requests:status", onJoinStatus);
+      socket.off("join-requests:status", handler);
     };
-  }, [socket, currentUserId, currentOwnerId, media, markIntentState]);
+  }, [socket, userId, media]);
 
-  // ---------------------- join actions ----------------------
-  const canSendJoin = (ownerId: number, intent: Intent): boolean => {
-    if (!ownerId) return false;
-    if (currentUserId && Number(currentUserId) === Number(ownerId)) return false; // I'm the owner
-    const st = (joinMap[String(ownerId)] || {})[intent] || "idle";
-    // Block only if THIS intent is pending/approved; other intents are independent
-    if (st === "pending" || st === "approved") return false;
-    return true;
+  /**
+   * هل يمكن إرسال طلب (VIEW أو CONTROL) للبث الحالي؟
+   */
+  const canSendJoin = (intent: Intent): boolean => {
+    if (!currentBroadcast || !currentBroadcast.ownerUserId || !userId)
+      return false;
+
+    if (
+      Number(userId) ===
+      Number(currentBroadcast.ownerUserId)
+    )
+      return false;
+
+    const state =
+      intent === "VIEW"
+        ? joinStateView
+        : joinStateControl;
+
+    return state === "idle" || state === "rejected";
   };
 
+  /**
+   * إرسال طلب انضمام للبث الحالي
+   */
   const sendJoin = async (intent: Intent) => {
-    if (!currentOwnerId) return;
-    if (!canSendJoin(currentOwnerId, intent)) return;
+    if (
+      !currentBroadcast ||
+      !currentBroadcast.ownerUserId ||
+      !userId
+    )
+      return;
+    if (!canSendJoin(intent)) return;
+
+    const setState =
+      intent === "VIEW"
+        ? setJoinStateView
+        : setJoinStateControl;
+
+    setState("pending");
+
     try {
-      // Optimistic pending
-      markIntentState(currentOwnerId, intent, "pending");
-      await api.post(`/api/broadcast/request/${intent.toLowerCase()}`, {
-        toUserId: currentOwnerId,
+      await api.post("/join-requests", {
+        toUserId: currentBroadcast.ownerUserId,
+        intent,
+        broadcastId: currentBroadcast.id,
         message:
-          intent === "CAMERA"
-            ? "أرغب بمشاركة الكاميرا."
-            : intent === "SCREEN"
-            ? "أرغب بمشاركة الشاشة."
-            : intent === "ROLE_UPGRADE"
-            ? "أرغب بالترقية على هذا البث."
-            : "أرغب بمشاهدة هذا البث.",
+          intent === "VIEW"
+            ? `أرغب في مشاهدة البث رقم ${currentBroadcast.id}.`
+            : "أرغب في التحكم بالمركبة المرتبطة بهذا البث.",
       });
-      // Backend may only store "last" → refresh just in case
-      void fetchJoinForOwner(currentOwnerId);
-      setErrorMsg(null);
+      setError(null);
     } catch {
-      // revert to idle on failure
-      markIntentState(currentOwnerId, intent, "idle");
-      setErrorMsg("تعذّر إرسال الطلب. حاول لاحقًا.");
+      setState("idle");
+      setError(
+        "تعذّر إرسال الطلب. يرجى المحاولة لاحقًا.",
+      );
     }
   };
 
-  // ---------------------- publisher moderation (push notify) ----------------------
+  /**
+   * اعتماد / رفض طلبات الانضمام (للمالك / الأدمن)
+   */
   const approveJoin = async (req: JoinRequestItem) => {
     try {
-      await api.post(`/api/join-requests/${req.id}/approve`, {});
-      setPendingRequests((prev) => prev.filter((r) => r.id !== req.id));
-      // Push live status to the target viewer
-      media?.socket?.emit?.("join:notify", {
-        toUserId: Number(req.fromUserId),
+      await api.post(
+        `/join-requests/${req.id}/approve`,
+      );
+      setPending((prev) =>
+        prev.filter((r) => r.id !== req.id),
+      );
+      socket?.emit?.("join:notify", {
+        toUserId: req.fromUserId,
         status: "APPROVED",
-        intent: (req.intent || "VIEW") as Intent,
+        intent: req.intent,
         requestId: req.id,
       });
     } catch {
-      setErrorMsg("تعذّر اعتماد الطلب.");
+      setError(
+        "تعذّر اعتماد الطلب. يرجى المحاولة لاحقًا.",
+      );
     }
   };
 
   const rejectJoin = async (req: JoinRequestItem) => {
     try {
-      await api.post(`/api/join-requests/${req.id}/reject`, {});
-      setPendingRequests((prev) => prev.filter((r) => r.id !== req.id));
-      // Push live status
-      media?.socket?.emit?.("join:notify", {
-        toUserId: Number(req.fromUserId),
+      await api.post(
+        `/join-requests/${req.id}/reject`,
+      );
+      setPending((prev) =>
+        prev.filter((r) => r.id !== req.id),
+      );
+      socket?.emit?.("join:notify", {
+        toUserId: req.fromUserId,
         status: "REJECTED",
-        intent: (req.intent || "VIEW") as Intent,
+        intent: req.intent,
         requestId: req.id,
       });
     } catch {
-      setErrorMsg("تعذّر رفض الطلب.");
+      setError(
+        "تعذّر رفض الطلب. يرجى المحاولة لاحقًا.",
+      );
     }
   };
 
-  // ---------------------- tiles (no duplicate of primary) ----------------------
-  const tiles = useMemo(
-    () =>
-      videoRemotes.map((r: any) => {
-        const id = String(r.producerId || r.id || r.streamId || r.externalId || Math.random().toString(36));
-        return {
-          id,
-          kind: "video" as const,
-          peerId: r.peerId as string | undefined,
-          title: r.label
-            ? r.label
-            : `VIDEO • peer:${String(r.peerId ?? r.ownerId ?? "remote").slice(0, 6)}`,
-        };
-      }),
-    [videoRemotes],
-  );
-
-  const activeRemote = primaryRemote;
-  const activeId = activeRemote ? String(activeRemote.producerId ?? activeRemote.id ?? activeRemote.streamId) : null;
-  const gridTiles = tiles.filter((t) => t.id !== activeId); // drop the main one
-
-  // ui helpers
-  const startLocalCamera = async () => {
+  /**
+   * تشغيل كاميرا المالك محلياً (للبث من نفس الواجهة)
+   */
+  const startCamera = async () => {
     if (!canPublishNow) return;
+    setIsStartingCam(true);
     try {
-      setIsStartingLocal(true);
-      await media?.startCamera?.({ withAudio: true });
+      await media?.startCamera?.({
+        withAudio: true,
+      });
     } finally {
-      setTimeout(() => setIsStartingLocal(false), 450);
+      setTimeout(
+        () => setIsStartingCam(false),
+        300,
+      );
     }
   };
 
-  // main viewer render
-  const renderMainViewer = () => {
-    if (viewRequiresApproval && !allowViewNow) {
-      return (
-        <div className="relative flex flex-col items-center justify-center w-full h-full gap-3 overflow-hidden text-center bg-black">
-          <div className="absolute inset-0 bg-[url('/placeholder-frame.webp')] bg-cover bg-center opacity-30" />
-          <div className="relative z-10 px-3 py-1 text-sm rounded bg-slate-950/70 text-slate-100">هذه قناة خاصة. بانتظار الموافقة.</div>
-          <p className="relative z-10 text-[11px] text-slate-400">أرسل طلب مشاهدة ليتم تفعيل البث لديك.</p>
-        </div>
-      );
+  /**
+   * ربط معاينة الكاميرا المحلية إذا متاحة
+   */
+  useEffect(() => {
+    if (!localPreviewRef.current) return;
+
+    const stream =
+      media?.localCameraStream ||
+      media?.localStream ||
+      media?.previewStream ||
+      media?.cameraStream;
+
+    if (stream && localPreviewRef.current.srcObject !== stream) {
+      localPreviewRef.current.srcObject = stream;
+    }
+  }, [media]);
+
+  /**
+   * نشر صلاحية المشاهدة للـ MediaContext
+   */
+  useEffect(() => {
+    media?.setViewingAllowed?.(!!allowView);
+    if (
+      allowView &&
+      mediaStatus === "connected"
+    ) {
+      media?.refreshProducers?.();
+    }
+  }, [allowView, mediaStatus, media]);
+
+  /**
+   * إدارة حالة الانتظار لظهور منتِج الفيديو
+   */
+  useEffect(() => {
+    if (
+      !currentBroadcast ||
+      !allowView ||
+      mediaStatus !== "connected"
+    ) {
+      setWaitingVideo(false);
+      return;
     }
 
-    if (mediaStatus === "connecting") {
-      return (
-        <div className="flex flex-col items-center justify-center w-full h-full gap-3">
-          <div className="w-10 h-10 border-2 rounded-full border-slate-500/40 border-t-emerald-300 animate-spin" />
-          <p className="text-xs text-slate-300">جارٍ تهيئة الاتصال…</p>
-        </div>
-      );
+    if (videoRemotes.length > 0) {
+      setWaitingVideo(false);
+      return;
     }
 
-    if (isStartingLocal) {
-      return (
-        <div className="flex flex-col items-center justify-center w-full h-full gap-3">
-          <div className="w-10 h-10 border-2 rounded-full border-slate-500/40 border-t-emerald-300 animate-spin" />
-          <p className="text-xs text-slate-300">تشغيل الكاميرا…</p>
-        </div>
-      );
-    }
+    setWaitingVideo(true);
+    media?.refreshProducers?.();
+  }, [
+    currentBroadcast?.id,
+    allowView,
+    mediaStatus,
+    videoRemotes.length,
+    media,
+  ]);
 
-    if (hasVideoRemotes && activeRemote) {
-      return (
-        <div className="relative">
-          {/* Quality picker overlay */}
-          <div className="absolute z-20 flex items-center gap-1 p-1 border rounded bottom-2 left-2 bg-slate-900/70 border-slate-700">
-            <span className="px-1 text-[10px] text-slate-300">الجودة</span>
-            <select
-              value={quality}
-              onChange={(e) => setQuality(e.target.value as any)}
-              className="px-2 py-[2px] text-[10px] rounded bg-slate-800 text-slate-100 border border-slate-600"
-            >
-              <option>Auto</option>
-              <option>144p</option>
-              <option>360p</option>
-              <option>720p+</option>
-            </select>
-          </div>
-
-          <LiveTile
-            key={activeId!}
-            producerId={activeId!}
-            kind="video"
-            title={currentBroadcast?.title || "بث مباشر"}
-            isPrimary
-            hideChrome
-            zoomable
-            peerId={activeRemote.peerId}
-          />
-        </div>
-      );
-    }
-
-    if (shouldWaitForVideo && !waitingStale) {
+  /**
+   * منطق عرض منطقة البث الرئيسية
+   */
+  const renderMain = () => {
+    // مشاهد بدون إذن مشاهدة
+    if (viewerOnly && !allowView) {
       return (
         <div className="flex flex-col items-center justify-center w-full h-full gap-2 px-6 text-center">
-          <div className="border-2 rounded-full w-9 h-9 border-slate-500/40 border-t-emerald-200 animate-spin" />
           <p className="px-3 py-1 text-sm rounded bg-slate-950/80 text-slate-100">
-            تم العثور على بث، بانتظار وصول الفيديو…
+            هذا البث خاص. يرجى إرسال طلب مشاهدة للحصول على الإذن.
           </p>
           <p className="text-[11px] text-slate-500">
-            إذا استمر هذا، فصاحب البث لم يفعّل الكاميرا عبر mediasoup.
+            اختر البث من القائمة على اليمين ثم اضغط "طلب مشاهدة".
           </p>
         </div>
       );
     }
 
-    if (shouldWaitForVideo && waitingStale) {
+    // اتصال / تهيئة
+    if (mediaStatus === "connecting" || isStartingCam) {
       return (
-        <div className="flex flex-col items-center justify-center w-full h-full gap-2 px-6 text-center">
-          <p className="px-3 py-1 text-sm rounded bg-slate-950/80 text-slate-100">البث غير متاح حاليًا.</p>
-          <p className="text-[11px] text-slate-500">اطلب من صاحب البث تشغيل الكاميرا فعليًا، أو أعد فتح الصفحة.</p>
+        <div className="flex flex-col items-center justify-center w-full h-full gap-3">
+          <div className="w-10 h-10 border-2 rounded-full border-t-emerald-400 border-slate-600/40 animate-spin" />
+          <p className="text-xs text-slate-300">
+            جارٍ تهيئة الاتصال بنظام البث المباشر…
+          </p>
         </div>
       );
     }
 
-    if (media?.localCameraStream) {
+    // تيار رئيسي جاهز + مسموح مشاهدة
+    if (primary && allowView) {
+      const activeId =
+        primary.producerId ||
+        primary.id ||
+        primary.streamId;
+
+      return (
+        <LiveTile
+          producerId={String(activeId)}
+          kind="video"
+          isPrimary
+          zoomable
+          title={
+            currentBroadcast?.title ||
+            labelForKind(currentBroadcast?.kind)
+          }
+          peerId={primary.peerId}
+        />
+      );
+    }
+
+    // ننتظر ظهور الفيديو بعد اختيار البث ووجود إذن
+    if (waitingVideo && allowView) {
+      return (
+        <div className="flex flex-col items-center justify-center w-full h-full gap-2 px-6 text-center">
+          <div className="w-8 h-8 border-2 rounded-full border-t-emerald-300 border-slate-600/40 animate-spin" />
+          <p className="px-3 py-1 text-sm rounded bg-slate-950/80 text-slate-100">
+            تم اختيار البث — ننتظر بدء إرسال الفيديو من مالك البث.
+          </p>
+        </div>
+      );
+    }
+
+    // معاينة محلية للمالك (لو يشغّل كاميرته من هنا)
+    if (media?.localCameraStream && canPublishNow) {
       return (
         <video
           ref={localPreviewRef}
@@ -496,229 +570,310 @@ export default function BroadcastSources() {
       );
     }
 
+    // لا يوجد شيء متاح
     return (
       <div className="flex flex-col items-center justify-center w-full h-full gap-2 px-6 text-center">
-        <p className="px-3 py-1 text-sm rounded bg-slate-950/60 text-slate-100">لا يوجد تيار جاهز للعرض.</p>
-        <p className="text-[11px] text-slate-500">تأكد أن جهاز ما يبث فعليًا عبر mediasoup.</p>
+        <p className="px-3 py-1 text-sm rounded bg-slate-950/70 text-slate-100">
+          لا يوجد تيار متاح للعرض حاليًا.
+        </p>
+        <p className="text-[11px] text-slate-500">
+          تأكد من وجود بث مباشر فعّال أو تشغيل كاميرا مالك البث.
+        </p>
       </div>
     );
   };
 
-  // render
+  /**
+   * الواجهة الرئيسية
+   */
   return (
-    <div className="grid gap-4 lg:grid-cols-12 animate-fadeIn">
-      {/* LEFT */}
-      <div className="space-y-4 lg:col-span-8">
-        <div>
-          <h1 className="text-xl font-bold text-white">مصادر البث</h1>
-          <p className="text-sm text-slate-400">عرض رئيسي، اختيار مصدر، وتحكم الجودة.</p>
-        </div>
+    <div className="space-y-4 animate-fadeIn">
+      {/* عنوان الصفحة */}
+      <header className="space-y-1">
+        <h1 className="text-xl font-semibold text-white">
+          مركز البث المباشر
+        </h1>
+        <p className="text-sm text-slate-400">
+          تجربة موحّدة لمتابعة البثوث النشطة، إدارة صلاحيات المشاهدة والتحكم،
+          وتشغيل كاميرا المضيف من نفس الواجهة.
+        </p>
+      </header>
 
-        <div
-          className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm ${
+      {/* حالة الاتصال بخادم البث */}
+      <div
+        className={`flex items-center gap-2 px-3 py-2 rounded-md text-[11px] border ${
+          mediaStatus === "connected"
+            ? "bg-emerald-500/10 text-emerald-200 border-emerald-500/40"
+            : mediaStatus === "connecting"
+            ? "bg-amber-500/10 text-amber-100 border-amber-500/40"
+            : "bg-red-500/10 text-red-200 border-red-500/40"
+        }`}
+      >
+        <span
+          className={`w-2 h-2 rounded-full ${
             mediaStatus === "connected"
-              ? "bg-emerald-500/10 text-emerald-200 border border-emerald-500/30"
+              ? "bg-emerald-400"
               : mediaStatus === "connecting"
-              ? "bg-amber-500/10 text-amber-100 border border-amber-500/30"
-              : "bg-red-500/10 text-red-200 border border-red-500/30"
+              ? "bg-amber-400"
+              : "bg-red-400"
           }`}
-        >
-          <span
-            className={`w-2 h-2 rounded-full ${
-              mediaStatus === "connected" ? "bg-emerald-400" : mediaStatus === "connecting" ? "bg-amber-400" : "bg-red-400"
-            }`}
-          />
-          {mediaStatus === "connected" ? "متصل بخادم البث." : mediaStatus === "connecting" ? "جارٍ الاتصال بخادم البث…" : "غير متصل بخادم البث."}
-        </div>
-
-        {errorMsg ? (
-          <div className="px-4 py-2 text-xs border rounded-md bg-red-500/10 border-red-500/30 text-red-50">{errorMsg}</div>
-        ) : null}
-
-        <div className="relative w-full overflow-hidden border rounded-lg bg-slate-950/40 border-slate-800 aspect-video min-h-[280px] md:min-h-[340px] lg:min-h-[400px]">
-          {renderMainViewer()}
-        </div>
-
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-slate-200">جميع الوسائط المتاحة</h2>
-            <button
-              onClick={() => void media?.refreshProducers?.()}
-              className="text-[11px] rounded bg-slate-800 text-slate-200 px-2 py-1 border border-slate-700"
-            >
-              تحديث
-            </button>
-          </div>
-          {!allowViewNow ? (
-            <p className="text-xs text-slate-500">الرجاء طلب الإذن بالمشاهدة أولًا.</p>
-          ) : gridTiles.length === 0 ? (
-            <p className="text-xs text-slate-500">لا توجد تدفقات نشطة حالياً.</p>
-          ) : (
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              {gridTiles.map((t) => (
-                <div key={t.id} className="overflow-hidden border rounded-lg border-slate-800 bg-slate-950/40">
-                  <LiveTile producerId={t.id} kind={t.kind} title={t.title} className="bg-black" />
-                  <div className="px-2 py-1 text-[10px] bg-slate-900 text-slate-300">{t.title}</div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        />
+        {mediaStatus === "connected"
+          ? "متصل بخادم البث."
+          : mediaStatus === "connecting"
+          ? "جارٍ الاتصال بخادم البث…"
+          : "غير متصل بخادم البث."}
       </div>
 
-      {/* RIGHT */}
-      <div className="space-y-4 lg:col-span-4">
-        {/* Viewer join UI (per-intent buttons) */}
-        {viewerOnly && !isSelfOwner && (
-          <div className="flex flex-col gap-2 px-4 py-2 text-xs border rounded-md bg-slate-800/40 border-slate-700 text-slate-200">
-            <span>طلبات منفصلة حسب الغرض:</span>
-            <div className="flex flex-wrap gap-2">
-              <button
-                onClick={() => void sendJoin("VIEW")}
-                disabled={!canSendJoin(currentOwnerId!, "VIEW")}
-                className="text-[11px] rounded bg-emerald-500 text-slate-950 px-3 py-1 disabled:opacity-50"
-              >
-                طلب مشاهدة
-              </button>
-              <button
-                onClick={() => void sendJoin("CAMERA")}
-                disabled={!canSendJoin(currentOwnerId!, "CAMERA")}
-                className="text-[11px] rounded bg-slate-700 text-slate-50 px-3 py-1 disabled:opacity-50"
-              >
-                طلب مشاركة كاميرا
-              </button>
-              <button
-                onClick={() => void sendJoin("SCREEN")}
-                disabled={!canSendJoin(currentOwnerId!, "SCREEN")}
-                className="text-[11px] rounded bg-indigo-500 text-white px-3 py-1 disabled:opacity-50"
-              >
-                طلب مشاركة شاشة
-              </button>
-              <button
-                onClick={() => void sendJoin("ROLE_UPGRADE")}
-                disabled={!canSendJoin(currentOwnerId!, "ROLE_UPGRADE")}
-                className="text-[11px] rounded bg-fuchsia-600 text-white px-3 py-1 disabled:opacity-50"
-              >
-                طلب ترقية
-              </button>
-            </div>
+      {/* رسالة خطأ عامة */}
+      {error && (
+        <div className="px-4 py-2 text-xs border rounded-md bg-red-500/10 border-red-500/30 text-red-50">
+          {error}
+        </div>
+      )}
 
-            {/* Small state line */}
-            <div className="flex flex-wrap gap-2 text-[10px] text-slate-400">
-              <span>مشاهدة: {viewState}</span>
-              <span>كاميرا: {perIntent.CAMERA || "idle"}</span>
-              <span>شاشة: {perIntent.SCREEN || "idle"}</span>
-              <span>ترقية: {perIntent.ROLE_UPGRADE || "idle"}</span>
-            </div>
-          </div>
-        )}
+      {/* تخطيط رئيسي: معاينة + لوحة جانبية */}
+      <div className="grid gap-4 lg:grid-cols-12">
+        {/* منطقة البث الرئيسية */}
+        <section className="space-y-4 lg:col-span-8">
+        <div
+          className="
+            relative w-full overflow-hidden border rounded-lg
+            bg-slate-950/40 border-slate-800
+            min-h-[180px] max-h-[65vh]
+            md:min-h-[240px] md:max-h-[75vh]
+          "
+        >
+          {renderMain()}
+        </div>
+        </section>
 
-        {/* Publisher controls */}
-        {canPublishNow && (
-          <div className="flex flex-wrap items-center gap-2 p-3 border rounded-lg border-slate-800 bg-slate-900/40">
-            {!media?.camera?.isOn && (
-              <button onClick={() => void startLocalCamera()} className="text-[11px] rounded bg-emerald-500 text-slate-950 px-3 py-1">
-                تشغيل الكاميرا + الميكروفون
-              </button>
+        {/* اللوحة الجانبية */}
+        <aside className="space-y-4 lg:col-span-4">
+          {/* للمشاهد: طلب مشاهدة / تحكم للبث المحدد */}
+          {viewerOnly &&
+            currentBroadcast &&
+            !isOwner && (
+              <div className="flex flex-col gap-2 px-4 py-3 text-xs border rounded-md bg-slate-800/40 border-slate-700 text-slate-200">
+                <div>
+                  البث المحدد:{" "}
+                  <strong className="text-emerald-300">
+                    {currentBroadcast.title ||
+                      `${labelForKind(
+                        currentBroadcast.kind,
+                      )} رقم ${currentBroadcast.id}`}
+                  </strong>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => void sendJoin("VIEW")}
+                    disabled={!canSendJoin("VIEW")}
+                    className="px-3 py-1 text-[11px] rounded bg-emerald-500 text-slate-950 disabled:opacity-40"
+                  >
+                    طلب مشاهدة
+                    {joinStateView === "pending" &&
+                      " (قيد المراجعة)"}
+                    {joinStateView === "approved" &&
+                      " ✔"}
+                    {joinStateView === "rejected" &&
+                      " (مرفوض)"}
+                  </button>
+                  <button
+                    onClick={() =>
+                      void sendJoin("CONTROL")
+                    }
+                    disabled={!canSendJoin("CONTROL")}
+                    className="px-3 py-1 text-[11px] rounded bg-fuchsia-600 text-white disabled:opacity-40"
+                  >
+                    طلب تحكم بالمركبة
+                    {joinStateControl === "pending" &&
+                      " (قيد المراجعة)"}
+                    {joinStateControl === "approved" &&
+                      " ✔"}
+                    {joinStateControl === "rejected" &&
+                      " (مرفوض)"}
+                  </button>
+                </div>
+              </div>
             )}
-            {media?.camera?.isOn && (
-              <>
-                <button onClick={() => void media?.stopCamera?.()} className="text-[11px] rounded bg-slate-800 text-slate-100 px-3 py-1">
-                  إيقاف الكاميرا
-                </button>
+
+          {/* للمالك / الأدمن (أو من عنده صلاحية تحكم): أدوات سريعة للبث */}
+          {canPublishNow && (
+            <div className="flex flex-wrap items-center gap-2 p-3 text-[11px] border rounded-lg border-slate-800 bg-slate-900/40">
+              {!media?.camera?.isOn ? (
                 <button
-                  onClick={() => void media?.camera?.toggleMic?.()}
-                  className={`text-[11px] rounded px-3 py-1 ${
-                    media?.camera?.micMuted ? "bg-amber-500 text-slate-900" : "bg-slate-700 text-slate-50"
-                  }`}
+                  onClick={() => void startCamera()}
+                  className="px-3 py-1 rounded bg-emerald-500 text-slate-950"
                 >
-                  {media?.camera?.micMuted ? "تشغيل المايك" : "كتم المايك"}
+                  تشغيل الكاميرا بالصوت
                 </button>
-              </>
-            )}
-            <span className="w-px h-4 mx-2 bg-slate-700" />
-            <button onClick={() => void media?.startScreen?.()} className="text-[11px] rounded bg-indigo-500 text-white px-3 py-1">
-              مشاركة الشاشة
-            </button>
-            <button onClick={() => void media?.stopScreen?.()} className="text-[11px] rounded bg-slate-800 text-slate-100 px-3 py-1">
-              إيقاف المشاركة
-            </button>
-            <span className="w-px h-4 mx-2 bg-slate-700" />
-            <button onClick={() => void media?.endBroadcast?.()} className="text-[11px] rounded bg-red-600 text-white px-3 py-1">
-              إنهاء البث
-            </button>
-          </div>
-        )}
+              ) : (
+                <>
+                  <button
+                    onClick={() =>
+                      void media?.stopCamera?.()
+                    }
+                    className="px-3 py-1 rounded bg-slate-800 text-slate-100"
+                  >
+                    إيقاف الكاميرا
+                  </button>
+                  <button
+                    onClick={() =>
+                      void media?.camera?.toggleMic?.()
+                    }
+                    className={`px-3 py-1 rounded ${
+                      media?.camera?.micMuted
+                        ? "bg-amber-500 text-slate-900"
+                        : "bg-slate-700 text-slate-50"
+                    }`}
+                  >
+                    {media?.camera?.micMuted
+                      ? "تشغيل الميكروفون"
+                      : "كتم الميكروفون"}
+                  </button>
+                </>
+              )}
 
-        {/* Admin: join requests */}
-        {publisher && (
-          <div className="p-3 border rounded-lg border-slate-800 bg-slate-900/30">
-            <div className="flex items-center justify-between mb-2">
-              <h2 className="text-sm font-semibold text-slate-200">طلبات الانضمام</h2>
-              <span className="text-[10px] text-slate-500">{pendingRequests.length} طلب</span>
+              <span className="w-px h-4 mx-1 bg-slate-700" />
+
+              <button
+                onClick={() =>
+                  void media?.startScreen?.()
+                }
+                className="px-3 py-1 text-white bg-indigo-500 rounded"
+              >
+                مشاركة الشاشة
+              </button>
+              <button
+                onClick={() =>
+                  void media?.stopScreen?.()
+                }
+                className="px-3 py-1 rounded bg-slate-800 text-slate-100"
+              >
+                إيقاف مشاركة الشاشة
+              </button>
             </div>
-            {pendingRequests.length === 0 ? (
-              <p className="text-[11px] text-slate-500">لا توجد طلبات حالية.</p>
+          )}
+
+          {/* طلبات الانضمام (للناشر / الأدمن) */}
+          {publisherRole && (
+            <div className="p-3 text-[11px] border rounded-lg border-slate-800 bg-slate-900/30">
+              <div className="flex items-center justify-between mb-2">
+                <h2 className="text-sm font-semibold text-slate-200">
+                  طلبات الانضمام
+                </h2>
+                <span className="text-[10px] text-slate-500">
+                  {pending.length} طلب
+                </span>
+              </div>
+              {pending.length === 0 ? (
+                <p className="text-slate-500">
+                  لا توجد طلبات في الوقت الحالي.
+                </p>
+              ) : (
+                <ul className="flex flex-col gap-2">
+                  {pending.map((r) => (
+                    <li
+                      key={r.id}
+                      className="flex items-center justify-between gap-3 px-3 py-2 border rounded-md bg-slate-950/40 border-slate-800"
+                    >
+                      <div>
+                        <div className="text-slate-100">
+                          المستخدم رقم {r.fromUserId}
+                        </div>
+                        <div className="text-[10px] text-slate-500">
+                          {r.message ||
+                            "لا توجد رسالة مرفقة."}
+                        </div>
+                        <div className="mt-1 text-[9px] text-slate-500">
+                          النوع:{" "}
+                          {r.intent === "CONTROL"
+                            ? "طلب تحكم"
+                            : "طلب مشاهدة"}
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() =>
+                            void approveJoin(r)
+                          }
+                          className="px-2 py-1 rounded bg-emerald-500 text-slate-950"
+                        >
+                          موافقة
+                        </button>
+                        <button
+                          onClick={() =>
+                            void rejectJoin(r)
+                          }
+                          className="px-2 py-1 text-white rounded bg-red-500/80"
+                        >
+                          رفض
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
+          {/* قائمة البثوث النشطة */}
+          <div className="p-3 text-[11px] border rounded-lg border-slate-800 bg-slate-900/30">
+            <h2 className="mb-2 text-sm font-semibold text-slate-200">
+              البثوث النشطة
+            </h2>
+            {broadcasts.length === 0 ? (
+              <p className="text-slate-500">
+                لا توجد بثوث مباشرة في الوقت الحالي.
+              </p>
             ) : (
               <ul className="flex flex-col gap-2">
-                {pendingRequests.map((req) => (
-                  <li key={req.id} className="flex items-center justify-between gap-3 px-3 py-2 border rounded-md bg-slate-950/40 border-slate-800">
-                    <div>
-                      <p className="text-xs text-slate-100">المستخدم #{req.fromUserId}</p>
-                      <p className="text-[10px] text-slate-500">{req.message || "لا يوجد نص مرفق."}</p>
-                      <p className="text-[9px] text-slate-500 mt-1">
-                        نوع الطلب: {req.intent === "ROLE_UPGRADE" ? "طلب ترقية" : req.intent === "SCREEN" ? "طلب مشاركة شاشة" : req.intent === "CAMERA" ? "طلب مشاركة كاميرا" : "طلب مشاهدة"}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button onClick={() => void approveJoin(req)} className="text-[10px] px-2 py-1 rounded bg-emerald-500 text-slate-950">
-                        موافقة
-                      </button>
-                      <button onClick={() => void rejectJoin(req)} className="text-[10px] px-2 py-1 rounded bg-red-500/80 text-white">
-                        رفض
-                      </button>
-                    </div>
-                  </li>
-                ))}
+                {broadcasts.map((b) => {
+                  const selected =
+                    b.id === currentBroadcast?.id;
+                  return (
+                    <li
+                      key={b.id}
+                      onClick={() =>
+                        setSelectedId(b.id)
+                      }
+                      className={`flex items-center justify-between px-3 py-2 border rounded-md cursor-pointer transition ${
+                        selected
+                          ? "bg-slate-900 border-emerald-500/40"
+                          : "bg-slate-950/40 border-slate-800 hover:border-slate-600"
+                      }`}
+                    >
+                      <div>
+                        <div className="text-xs text-slate-100">
+                          {b.title ||
+                            `${labelForKind(
+                              b.kind,
+                            )} رقم ${b.id}`}
+                        </div>
+                        <div className="text-[9px] text-slate-500">
+                          المالك:{" "}
+                          {b.ownerName ||
+                            b.ownerUserId ||
+                            "غير محدد"}
+                        </div>
+                      </div>
+                      <span
+                        className={`w-2 h-2 rounded-full ${
+                          selected
+                            ? "bg-emerald-400"
+                            : "bg-emerald-400/40"
+                        }`}
+                      />
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>
-        )}
-
-        {/* Broadcasts list */}
-        <div className="p-3 border rounded-lg border-slate-800 bg-slate-900/30">
-          <h2 className="mb-2 text-sm font-semibold text-slate-200">البثوث الحالية</h2>
-          {broadcasts.length === 0 ? (
-            <p className="text-[11px] text-slate-500">لا توجد بيانات بث.</p>
-          ) : (
-            <ul className="flex flex-col gap-2">
-              {broadcasts.map((b) => {
-                const ownerId = b.ownerUserId || b.ownerId || OWNER_FALLBACK;
-                const stView = (joinMap[String(ownerId)] || {}).VIEW || "idle";
-                const isSelected = String(selectedBroadcastId) === String(b.id);
-                return (
-                  <li
-                    key={b.id}
-                    onClick={() => setSelectedBroadcastId(b.id)}
-                    className={`flex items-center justify-between px-3 py-2 border rounded-md cursor-pointer transition ${
-                      isSelected ? "bg-slate-900 border-emerald-500/40" : "bg-slate-950/40 border-slate-800 hover:border-slate-600"
-                    }`}
-                  >
-                    <div>
-                      <p className="text-xs text-slate-100">{b.title || `بث رقم #${b.id}`}</p>
-                      <p className="text-[10px] text-slate-500">
-                        {(b.kind || "STREAM").toUpperCase()} {ownerId ? `• المالك: ${ownerId}` : ""}{" "}
-                        {stView === "approved" ? "• مصرح بالمشاهدة" : stView === "pending" ? "• بانتظار الموافقة" : ""}
-                      </p>
-                    </div>
-                    <span className={`w-2 h-2 rounded-full ${isSelected ? "bg-emerald-400" : "bg-emerald-400/40"} animate-pulse`} />
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </div>
+        </aside>
       </div>
     </div>
   );
-}
+};
+
+export default BroadcastSources;

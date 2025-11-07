@@ -1,4 +1,6 @@
-// src/components/JoinRequestBar.tsx
+// client/src/components/JoinRequestBar.tsx
+// Simple viewer bar to request VIEW permission from main owner.
+
 import React, { useEffect, useState } from "react";
 import { api } from "../services/api";
 import { useAuth } from "../auth/AuthContext";
@@ -6,30 +8,49 @@ import { isViewer } from "../auth/roles";
 
 type JoinStatus = "idle" | "pending" | "approved" | "rejected" | "error";
 
-// هذا هو مالك الحساب اللي يستقبل الطلب
-const ACCOUNT_OWNER_ID = 1;
+// Default owner user id (broadcaster account).
+const ACCOUNT_OWNER_ID = Number(
+  import.meta.env.VITE_OWNER_USER_ID || "1",
+);
 
 const JoinRequestBar: React.FC = () => {
   const { user } = useAuth();
   const [status, setStatus] = useState<JoinStatus>("idle");
   const [loading, setLoading] = useState(false);
 
-  if (!user || !isViewer(user.role)) return null;
+  // استنتاج الـ userId من الـ user object
+  const currentUserId: number | null =
+    (user && typeof (user as any).id === "number" && (user as any).id) ||
+    (user && typeof (user as any).userId === "number" && (user as any).userId) ||
+    null;
 
-  const sendRequest = async (mode: "VIEW" | "PUBLISH") => {
+  const isOwner =
+    currentUserId != null &&
+    ACCOUNT_OWNER_ID != null &&
+    Number(currentUserId) === Number(ACCOUNT_OWNER_ID);
+
+  // نظهر الشريط فقط:
+  // - مستخدم مسجل
+  // - دوره Viewer
+  // - ليس هو صاحب البث نفسه (حتى لا يرسل لنفسه)
+  if (!user || !isViewer(user.role) || isOwner) return null;
+
+  const sendViewRequest = async () => {
     setLoading(true);
     try {
-      const data = await api.post("/join-requests", {
+      const res = await api.post<{
+        id: number;
+        status: "PENDING" | "APPROVED" | "REJECTED";
+      }>("/join-requests", {
         toUserId: ACCOUNT_OWNER_ID,
-        message:
-          mode === "PUBLISH"
-            ? "طلب انضمام كمذيع / أريد مشاركة كاميرتي"
-            : "طلب مشاهدة مصدر البث الحالي",
+        intent: "VIEW",
+        message: "طلب مشاهدة البث.",
       });
+
       setStatus(
-        data.status === "APPROVED"
+        res.status === "APPROVED"
           ? "approved"
-          : data.status === "REJECTED"
+          : res.status === "REJECTED"
           ? "rejected"
           : "pending",
       );
@@ -40,20 +61,22 @@ const JoinRequestBar: React.FC = () => {
     }
   };
 
+  // Load last status on mount.
   useEffect(() => {
-    let mounted = true;
+    if (!currentUserId || isOwner) return;
+
     (async () => {
       try {
-        const data = await api.get(
-          `/join-requests/last/${ACCOUNT_OWNER_ID}`,
-        );
-        if (!mounted) return;
+        const res = await api.get<{
+          status: "NONE" | "PENDING" | "APPROVED" | "REJECTED";
+        }>(`/join-requests/last/${ACCOUNT_OWNER_ID}`);
+
         setStatus(
-          data?.status === "APPROVED"
+          res.status === "APPROVED"
             ? "approved"
-            : data?.status === "REJECTED"
+            : res.status === "REJECTED"
             ? "rejected"
-            : data?.status === "PENDING"
+            : res.status === "PENDING"
             ? "pending"
             : "idle",
         );
@@ -61,16 +84,12 @@ const JoinRequestBar: React.FC = () => {
         // ignore
       }
     })();
-    return () => {
-      mounted = false;
-    };
-  }, []);
+  }, [currentUserId, isOwner]);
 
-  // لو رفض → نعطيه زر يخفي التنبيه
   if (status === "rejected") {
     return (
       <div className="flex items-center justify-between gap-3 px-4 py-2 mb-4 text-xs text-red-100 border rounded-md border-red-500/40 bg-red-500/5">
-        <p>تم رفض طلبك. تقدر تعيد الإرسال لاحقاً.</p>
+        <p>تم رفض طلب المشاهدة. يمكنك المحاولة لاحقاً.</p>
         <button
           onClick={() => setStatus("idle")}
           className="text-[10px] underline"
@@ -82,44 +101,34 @@ const JoinRequestBar: React.FC = () => {
   }
 
   return (
-    <div className="flex items-center justify-between gap-3 px-4 py-2 mb-4 text-xs border rounded-md border-amber-500/40 bg-amber-500/10 text-amber-50">
+    <div className="flex items-center justify-between gap-3 px-4 py-2 mb-4 text-xs border rounded-md border-emerald-500/30 bg-emerald-500/5 text-emerald-50">
       <div>
         {status === "idle" && (
-          <p>
-            أنت مسجّل بصلاحية مشاهدة فقط. تقدر تطلب إذن للمشاركة أو الظهور على
-            البث.
-          </p>
+          <p>تحتاج لموافقة صاحب البث لعرض القناة.</p>
         )}
-        {status === "pending" && <p>تم استلام طلبك، بانتظار موافقة المسؤول.</p>}
+        {status === "pending" && (
+          <p>طلبك قيد المراجعة لدى صاحب البث.</p>
+        )}
         {status === "approved" && (
-          <p className="text-emerald-200">
-            تمّت الموافقة. سجل خروج وادخل مرة ثانية علشان تتحدث الصلاحيات.
+          <p className="text-emerald-300">
+            تمت الموافقة — أعد تحميل صفحة البث لفتح المشاهدة.
           </p>
         )}
         {status === "error" && (
-          <p className="text-red-200">تعذّر إرسال الطلب، جرّب مرة ثانية.</p>
+          <p className="text-red-200">
+            تعذّر إرسال الطلب، حاول مجدداً.
+          </p>
         )}
       </div>
-      <div className="flex gap-2">
-        {(status === "idle" || status === "error") && (
-          <>
-            <button
-              onClick={() => void sendRequest("VIEW")}
-              disabled={loading}
-              className="rounded bg-amber-400 px-3 py-1 text-[11px] font-semibold text-slate-950 hover:bg-amber-300 disabled:opacity-60"
-            >
-              طلب مشاهدة
-            </button>
-            <button
-              onClick={() => void sendRequest("PUBLISH")}
-              disabled={loading}
-              className="rounded bg-slate-900/80 px-3 py-1 text-[11px] font-semibold text-amber-50 border border-amber-400/40 hover:bg-slate-900 disabled:opacity-60"
-            >
-              طلب بث الكاميرا
-            </button>
-          </>
-        )}
-      </div>
+      {(status === "idle" || status === "error") && (
+        <button
+          onClick={() => void sendViewRequest()}
+          disabled={loading}
+          className="rounded bg-emerald-500 px-3 py-1 text-[11px] font-semibold text-slate-950 hover:bg-emerald-400 disabled:opacity-60"
+        >
+          طلب مشاهدة
+        </button>
+      )}
     </div>
   );
 };

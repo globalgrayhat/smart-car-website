@@ -1,4 +1,6 @@
-// src/main.tsx
+// client/src/main.tsx
+// App entry: wraps with BrowserRouter, AuthProvider, MediaProvider.
+
 import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
