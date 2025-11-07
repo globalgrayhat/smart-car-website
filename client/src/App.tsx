@@ -18,6 +18,7 @@ import BroadcastSources from "./pages/BroadcastSources";
 import Vehicles from "./pages/Vehicles";
 import { useAuth } from "./auth/AuthContext";
 import { canSeeAdminPages } from "./auth/roles";
+import GlobalAlertStrip from "./components/GlobalAlertStrip";
 
 type PageId =
   | "home"
@@ -137,6 +138,7 @@ const App: React.FC = () => {
       <div className="flex flex-col flex-1 min-w-0">
         <Header title={header.title} subtitle={header.subtitle} />
         <main className="flex-1 min-h-0 p-4 md:p-6 bg-slate-950/40">
+        <GlobalAlertStrip /> 
           {renderPage()}
         </main>
         <Footer />

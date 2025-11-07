@@ -5,6 +5,7 @@
  * Renders a remote Mediasoup producer (video/audio) and binds it to a DOM element.
  * - For primary tiles: video + peer audio (unified broadcast experience).
  * - For secondary tiles: muted video previews only.
+ * - Mobile-friendly sizing with safe-area support.
  */
 
 import React, { useEffect, useRef, useState } from "react";
@@ -95,7 +96,11 @@ export const LiveTile: React.FC<LiveTileProps> = ({
         مباشر
       </span>
       {title && (
-        <span className="px-2 py-[2px] text-[9px] md:text-[10px] rounded bg-slate-900/80 text-slate-100 max-w-[60vw] md:max-w-xs truncate">
+        <span
+          className="px-2 py-[2px] text-[9px] md:text-[10px] rounded bg-slate-900/80 text-slate-100 truncate"
+          style={{ maxWidth: "min(60vw, 22rem)" }}
+          title={title}
+        >
           {title}
         </span>
       )}
@@ -114,39 +119,39 @@ export const LiveTile: React.FC<LiveTileProps> = ({
     zoomable && !hideChrome ? (
       <div className="absolute z-10 flex items-center gap-1 bottom-2 right-2">
         <button
-          onClick={() =>
-            setZoom((z) => Math.max(0.5, +(z - 0.1).toFixed(1)))
-          }
-          className="px-2 py-1 text-[9px] md:text-[10px] rounded bg-slate-900/80 text-slate-100 border border-slate-700"
+          onClick={() => setZoom((z) => Math.max(0.5, +(z - 0.1).toFixed(1)))}
+          className="px-2 py-1 text-[9px] md:text-[10px] rounded bg-slate-900/80 text-slate-100 border border-slate-700 focus:outline-none focus:ring focus:ring-emerald-500/30"
+          aria-label="Zoom out"
         >
           −
         </button>
         <button
           onClick={() => setZoom(1)}
-          className="px-2 py-1 text-[9px] md:text-[10px] rounded bg-slate-900/80 text-slate-100 border border-slate-700"
+          className="px-2 py-1 text-[9px] md:text-[10px] rounded bg-slate-900/80 text-slate-100 border border-slate-700 focus:outline-none focus:ring focus:ring-emerald-500/30"
+          aria-label="Reset zoom"
         >
           ١×
         </button>
         <button
-          onClick={() =>
-            setZoom((z) => Math.min(2.5, +(z + 0.1).toFixed(1)))
-          }
-          className="px-2 py-1 text-[9px] md:text-[10px] rounded bg-slate-900/80 text-slate-100 border border-slate-700"
+          onClick={() => setZoom((z) => Math.min(2.5, +(z + 0.1).toFixed(1)))}
+          className="px-2 py-1 text-[9px] md:text-[10px] rounded bg-slate-900/80 text-slate-100 border border-slate-700 focus:outline-none focus:ring focus:ring-emerald-500/30"
+          aria-label="Zoom in"
         >
           +
         </button>
       </div>
     ) : null;
 
-  // PRIMARY TILE: يكون مرن ويعتمد على الحاوية الأم، مع حد أقصى مناسب للشاشات
+  /**
+   * Primary tile: flexible to parent container with mobile-friendly height caps.
+   * Uses 'svh' to respect mobile browser UI and safe areas.
+   */
   if (isPrimary) {
     return (
       <div
-        className={`
-          relative overflow-hidden rounded-lg bg-slate-950/40 border border-slate-800
-          w-full h-full min-h-[180px] max-h-[70vh]
-          ${className}
-        `}
+        className={`relative overflow-hidden rounded-lg bg-slate-950/40 border border-slate-800 w-full h-full min-h-[200px] md:min-h-[260px] max-h-[min(78svh,78vh)] ${className}`}
+        role="region"
+        aria-label={title || "البث المباشر"}
       >
         {chromeTop}
         <div className="absolute inset-0">
@@ -169,13 +174,12 @@ export const LiveTile: React.FC<LiveTileProps> = ({
     );
   }
 
-  // ثانوي / معاينة صغيرة
+  // Secondary / small preview
   return (
     <div
-      className={`
-        overflow-hidden bg-black border rounded-xl border-slate-800
-        ${className}
-      `}
+      className={`overflow-hidden bg-black border rounded-xl border-slate-800 ${className}`}
+      role="img"
+      aria-label={title || "معاينة البث"}
     >
       <div className="relative aspect-video bg-slate-950">
         <video
@@ -187,7 +191,7 @@ export const LiveTile: React.FC<LiveTileProps> = ({
         />
         {title && (
           <div className="absolute bottom-0 left-0 right-0 px-2 py-1 bg-black/50">
-            <p className="text-[9px] md:text-[10px] text-slate-100 truncate">
+            <p className="text-[9px] md:text-[10px] text-slate-100 truncate" title={title}>
               {title}
             </p>
           </div>
